@@ -143,7 +143,7 @@ echo "=== Step 3: Checking if image already exists in OpenStack ==="
 
 IMAGE_EXISTS=$(python3 - <<PYEOF
 import openstack, os
-conn = openstack.connect(auth_url=os.environ["OS_AUTH_URL"], insecure=True)
+conn = openstack.connect(load_envvars=True, insecure=True)
 image = conn.image.find_image("${IMAGE_NAME}", ignore_missing=True)
 print("yes" if image else "no")
 PYEOF
@@ -209,7 +209,7 @@ PYEOF
   python3 - <<PYEOF
 import openstack, os, sys
 
-conn = openstack.connect(auth_url=os.environ["OS_AUTH_URL"], insecure=True)
+conn = openstack.connect(load_envvars=True, insecure=True)
 
 print(f"Uploading '${IMAGE_NAME}' to OpenStack ...")
 print(f"Source: ${LOCAL_FILE}")
