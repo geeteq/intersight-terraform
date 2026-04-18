@@ -1,0 +1,38 @@
+intersight_api_key_id      = "your-api-key-id"
+intersight_secret_key_file = "secret_key.txt"
+intersight_endpoint        = "https://intersight.com"
+
+organization = "default"
+
+# --- IP Pool ---
+ip_pool_name  = "mgmt-ip-pool"
+ip_gateway    = "10.0.0.1"
+ip_netmask    = "255.255.255.0"
+dns_primary   = "8.8.8.8"
+dns_secondary = "8.8.4.4"
+
+ip_ranges = [
+  {
+    from = "10.0.0.10"
+    size = 100
+  }
+]
+
+# --- MAC Pool ---
+mac_pool_name = "mac-pool"
+
+mac_ranges = [
+  {
+    from = "00:25:B5:00:00:00"
+    size = 256
+  }
+]
+
+# --- Server Profiles ---
+target_platform              = "FIAttached"
+server_profile_template_name = "base-server-template"
+
+server_profiles = [
+  { name = "server-01", description = "First server" },
+  { name = "server-02", description = "Second server" },
+]
