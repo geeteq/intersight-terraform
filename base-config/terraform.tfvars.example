@@ -1,37 +1,82 @@
 intersight_api_key_id      = "your-api-key-id"
 intersight_secret_key_file = "secret_key.txt"
 intersight_endpoint        = "https://intersight.com"
-
-organization = "default"
+organization               = "default"
+target_platform            = "FIAttached"
 
 # --- IP Pool ---
-ip_pool_name  = "mgmt-ip-pool"
-ip_gateway    = "10.0.0.1"
-ip_netmask    = "255.255.255.0"
-dns_primary   = "8.8.8.8"
-dns_secondary = "8.8.4.4"
+create_ip_pool = true
+ip_pool_name   = "mgmt-ip-pool"
+ip_gateway     = "10.0.0.1"
+ip_netmask     = "255.255.255.0"
+dns_primary    = "8.8.8.8"
+dns_secondary  = "8.8.4.4"
 
 ip_ranges = [
-  {
-    from = "10.0.0.10"
-    size = 100
-  }
+  { from = "10.0.0.10", size = 100 }
 ]
 
 # --- MAC Pool ---
-mac_pool_name = "mac-pool"
+create_mac_pool = true
+mac_pool_name   = "mac-pool"
 
 mac_ranges = [
-  {
-    from = "00:25:B5:00:00:00"
-    size = 256
-  }
+  { from = "00:25:B5:00:00:00", size = 256 }
 ]
 
-# --- Server Profiles ---
-target_platform              = "FIAttached"
+# --- UUID Pool ---
+create_uuid_pool = true
+uuid_pool_name   = "uuid-pool"
+uuid_prefix      = "000025B5-0000-0000"
+
+uuid_ranges = [
+  { from = "0000-000000000000", size = 256 }
+]
+
+# --- NTP Policy ---
+create_ntp_policy = true
+ntp_policy_name   = "ntp-policy"
+ntp_servers       = ["pool.ntp.org"]
+timezone          = "America/New_York"
+
+# --- Network Connectivity Policy ---
+create_network_policy = true
+network_policy_name   = "network-connectivity-policy"
+
+# --- Syslog Policy ---
+create_syslog_policy   = true
+syslog_policy_name     = "syslog-policy"
+syslog_host            = ""       # leave empty to disable remote syslog
+syslog_port            = 514
+syslog_local_severity  = "warning"
+syslog_remote_severity = "information"
+
+# --- BIOS Policy ---
+create_bios_policy = true
+bios_policy_name   = "bios-policy"
+
+# --- Boot Order Policy ---
+create_boot_policy = true
+boot_policy_name   = "boot-local-disk"
+
+# --- IMC Access Policy ---
+create_imc_policy = true
+imc_policy_name   = "imc-access-policy"
+imc_vlan          = 1
+
+# --- Local User Policy ---
+create_local_user_policy = true
+local_user_policy_name   = "local-user-policy"
+
+# --- LAN Connectivity Policy ---
+create_lan_policy = true
+lan_policy_name   = "lan-connectivity-policy"
+
+# --- Server Profile Template ---
+create_server_template       = true
 server_profile_template_name = "base-server-template"
 
+# --- Server Profiles ---
 server_profiles = [
   { name = "server-01", description = "First server" },
   { name = "server-02", description = "Second server" },
