@@ -1,0 +1,29 @@
+#cloud-config
+
+# Intersight Virtual Appliance initial configuration
+hostname: ${hostname}
+
+write_files:
+  - path: /etc/intersight/appliance-config.json
+    permissions: '0600'
+    content: |
+      {
+        "hostname": "${hostname}",
+        "dns": [${join(", ", formatlist("\"%s\"", dns_servers))}],
+        "ntp": [${join(", ", formatlist("\"%s\"", ntp_servers))}],
+        "adminPassword": "${admin_password}"
+        %{ if proxy_host != "" ~}
+        ,"proxy": {
+          "host": "${proxy_host}",
+          "port": ${proxy_port}
+          %{ if proxy_username != "" ~}
+          ,"username": "${proxy_username}",
+          "password": "${proxy_password}"
+          %{ endif ~}
+        }
+        %{ endif ~}
+      }
+
+runcmd:
+  - hostnamectl set-hostname ${hostname}
+  - [ sh, -c, "if [ -f /usr/local/bin/intersight-appliance-setup ]; then /usr/local/bin/intersight-appliance-setup --config /etc/intersight/appliance-config.json; fi" ]

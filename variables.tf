@@ -1,64 +1,125 @@
+# ---------------------------------------------------------------------------
+# Provider
+# ---------------------------------------------------------------------------
+
 variable "cloud_name" {
   description = "Cloud name as defined in clouds.yaml"
   type        = string
   default     = "openstack"
 }
 
-variable "vm_name" {
-  description = "Name of the VM to provision"
+# ---------------------------------------------------------------------------
+# Appliance identity
+# ---------------------------------------------------------------------------
+
+variable "hostname" {
+  description = "Hostname for the Intersight Virtual Appliance"
   type        = string
-  default     = "jumpbox"
+  default     = "intersight-appliance"
 }
 
-variable "image_name" {
-  description = "Name of the RHEL9 image in OpenStack"
-  type        = string
-  default     = "rhel9"
-}
-
-variable "flavor_name" {
-  description = "Flavor name for the VM"
-  type        = string
-  default     = "m1.medium"
-}
-
-variable "network_name" {
-  description = "Network name to attach the VM to"
-  type        = string
-}
-
-variable "security_groups" {
-  description = "List of security groups to assign to the VM"
-  type        = list(string)
-  default     = ["default"]
-}
-
-variable "availability_zone" {
-  description = "Availability zone for the VM"
-  type        = string
-  default     = "nova"
-}
-
-variable "floating_ip_pool" {
-  description = "External network name for floating IP allocation. Leave empty to skip."
-  type        = string
-  default     = ""
-}
-
-variable "baremetal_user" {
-  description = "Username to create via cloud-init"
-  type        = string
-  default     = "baremetal"
-}
-
-variable "ssh_public_key" {
-  description = "SSH public key to inject into the baremetal user"
+variable "admin_password" {
+  description = "Initial admin password for the Intersight appliance web UI"
   type        = string
   sensitive   = true
 }
 
-variable "packages" {
-  description = "Packages to install via cloud-init"
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+
+variable "management_network" {
+  description = "OpenStack network name for the appliance management interface"
+  type        = string
+}
+
+variable "floating_ip_pool" {
+  description = "External network name for floating IP. Leave empty to skip."
+  type        = string
+  default     = ""
+}
+
+variable "dns_servers" {
+  description = "DNS servers for the appliance"
   type        = list(string)
-  default     = ["mtr"]
+  default     = ["8.8.8.8", "8.8.4.4"]
+}
+
+variable "ntp_servers" {
+  description = "NTP servers for the appliance"
+  type        = list(string)
+  default     = ["pool.ntp.org"]
+}
+
+# ---------------------------------------------------------------------------
+# Proxy (optional)
+# ---------------------------------------------------------------------------
+
+variable "proxy_host" {
+  description = "HTTP proxy host for Intersight to reach Cisco cloud. Leave empty to disable."
+  type        = string
+  default     = ""
+}
+
+variable "proxy_port" {
+  description = "HTTP proxy port"
+  type        = number
+  default     = 3128
+}
+
+variable "proxy_username" {
+  description = "Proxy username (if required)"
+  type        = string
+  default     = ""
+}
+
+variable "proxy_password" {
+  description = "Proxy password (if required)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Compute
+# ---------------------------------------------------------------------------
+
+variable "image_name" {
+  description = "Intersight Virtual Appliance image name in OpenStack"
+  type        = string
+  default     = "intersight-appliance"
+}
+
+variable "flavor_name" {
+  description = "Flavor for the appliance — minimum 8 vCPU / 32GB RAM recommended"
+  type        = string
+  default     = "8cpu-32G-0G"
+}
+
+variable "root_volume_size" {
+  description = "Root volume size in GB — Intersight requires minimum 500GB"
+  type        = number
+  default     = 500
+}
+
+variable "availability_zone" {
+  description = "OpenStack availability zone"
+  type        = string
+  default     = "nova"
+}
+
+# ---------------------------------------------------------------------------
+# Security group
+# ---------------------------------------------------------------------------
+
+variable "create_security_group" {
+  description = "Set to true to create the security group. Set to false to use an existing one."
+  type        = bool
+  default     = true
+}
+
+variable "security_group_name" {
+  description = "Security group name to create or look up"
+  type        = string
+  default     = "intersight-sg"
 }

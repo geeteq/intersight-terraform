@@ -1,99 +1,111 @@
 # intersight-terraform
 
-Terraform configuration to provision a RHEL9 jumpbox VM on OpenStack with cloud-init.
+Terraform configuration to deploy a Cisco Intersight Virtual Appliance on OpenStack with basic default settings.
 
 ---
 
 ## Prerequisites
 
-- [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.3
+- Terraform >= 1.3
+- Intersight Virtual Appliance image imported into OpenStack
 - OpenStack application credential in `clouds.yaml`
-- RHEL9 image available in your OpenStack cluster
+- Minimum compute: 8 vCPU / 32GB RAM / 500GB disk
+
+---
+
+## Importing the Intersight Appliance Image
+
+Download the Intersight Virtual Appliance OVA from [Cisco Software Download](https://software.cisco.com) and import it into OpenStack:
+
+```bash
+openstack image create "intersight-appliance" \
+  --file intersight-appliance.qcow2 \
+  --disk-format qcow2 \
+  --container-format bare \
+  --public
+```
 
 ---
 
 ## Authentication
 
-Authentication is handled via `clouds.yaml`. Place it at `~/.config/openstack/clouds.yaml` or set the path with `OS_CLIENT_CONFIG_FILE`.
+Set up OpenStack credentials via `clouds.yaml` and export environment variables:
 
-**Application credential (recommended):**
-```yaml
-clouds:
-  openstack:
-    auth:
-      auth_url: https://your-cluster:13000/v3
-      application_credential_id: "<id>"
-      application_credential_secret: "<secret>"
-    auth_type: v3applicationcredential
-    interface: public
-    identity_api_version: 3
+```bash
+source setup_env.sh ~/.config/openstack/clouds.yaml openstack
 ```
-
-See [TROUBLESHOOT.md](../jumpbox-provision/TROUBLESHOOT.md) for auth issues.
 
 ---
 
-## Usage
-
-### 1. Copy and fill in variables
+## Configuration
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Edit `terraform.tfvars` with your values — at minimum set `network_name` and `ssh_public_key`.
+Edit `terraform.tfvars` with your values. Required fields:
 
-### 2. Initialise Terraform
+| Variable | Description |
+|---|---|
+| `management_network` | OpenStack network for the appliance |
+| `admin_password` | Initial admin password for the web UI |
+| `image_name` | Intersight image name in OpenStack |
+
+### Proxy
+
+If your environment requires a proxy for the appliance to reach Cisco cloud (licensing, updates):
+
+```hcl
+proxy_host = "proxy.yourdomain.com"
+proxy_port = 3128
+```
+
+Leave `proxy_host` empty to disable proxy configuration.
+
+---
+
+## Deploy
 
 ```bash
 terraform init
-```
-
-### 3. Plan
-
-```bash
 terraform plan
-```
-
-### 4. Apply
-
-```bash
 terraform apply
-```
-
-### 5. Connect
-
-The SSH command is printed in the outputs:
-
-```
-Outputs:
-
-instance_id  = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-instance_ip  = "10.0.0.10"
-floating_ip  = "203.0.113.10"
-ssh_command  = "ssh baremetal@203.0.113.10"
-```
-
-### 6. Destroy
-
-```bash
-terraform destroy
 ```
 
 ---
 
-## Variables
+## Accessing the Appliance
 
-| Name | Description | Default |
-|------|-------------|---------|
-| `cloud_name` | Cloud name in clouds.yaml | `openstack` |
-| `vm_name` | VM name | `jumpbox` |
-| `image_name` | RHEL9 image name in OpenStack | `rhel9` |
-| `flavor_name` | Flavor name | `m1.medium` |
-| `network_name` | Network to attach the VM to | required |
-| `security_groups` | Security groups | `["default"]` |
-| `availability_zone` | Availability zone | `nova` |
-| `floating_ip_pool` | External network for floating IP | `""` (skip) |
-| `baremetal_user` | User created via cloud-init | `baremetal` |
-| `ssh_public_key` | SSH public key for baremetal user | required |
-| `packages` | Packages installed via cloud-init | `["mtr"]` |
+The appliance URL is printed in the Terraform output:
+
+```
+Outputs:
+
+appliance_url  = "https://203.0.113.10"
+management_ip  = "10.0.0.10"
+```
+
+Open the URL in a browser and log in with:
+- **Username:** `admin`
+- **Password:** value of `admin_password` in your `terraform.tfvars`
+
+> Allow 10-15 minutes for the appliance to fully initialise after deployment.
+
+---
+
+## Ports Required
+
+| Port | Direction | Purpose |
+|------|-----------|---------|
+| 443 | Inbound | Web UI / API access |
+| 80 | Inbound | HTTP redirect to HTTPS |
+| 22 | Inbound | SSH management |
+| 443 | Outbound | Cisco cloud connectivity (licensing, updates) |
+
+---
+
+## Destroy
+
+```bash
+terraform destroy
+```

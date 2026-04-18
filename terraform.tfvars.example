@@ -1,18 +1,28 @@
-cloud_name        = "openstack"
-vm_name           = "jumpbox"
-image_name        = "rhel9"
-flavor_name       = "m1.medium"
-network_name      = "your-network"
+cloud_name = "openstack"
+
+# --- Appliance identity ---
+hostname       = "intersight-appliance"
+admin_password = "ChangeMe123!"   # initial admin password for the web UI
+
+# --- Compute ---
+image_name        = "intersight-appliance"   # image name as imported in OpenStack
+flavor_name       = "8cpu-32G-0G"            # minimum 8 vCPU / 32GB RAM
+root_volume_size  = 500                      # minimum 500GB
 availability_zone = "nova"
-floating_ip_pool  = ""
-baremetal_user    = "baremetal"
-ssh_public_key    = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB... user@host"
 
-security_groups = [
-  "default",
-  "ssh-access"
-]
+# --- Network ---
+management_network = "your-management-network"
+floating_ip_pool   = ""   # set to external network name for a public IP
 
-packages = [
-  "mtr"
-]
+dns_servers = ["8.8.8.8", "8.8.4.4"]
+ntp_servers = ["pool.ntp.org"]
+
+# --- Security group ---
+create_security_group = true
+security_group_name   = "intersight-sg"
+
+# --- Proxy (leave empty to disable) ---
+proxy_host     = ""
+proxy_port     = 3128
+proxy_username = ""
+proxy_password = ""
