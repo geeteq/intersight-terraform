@@ -66,6 +66,37 @@ Leave `proxy_host` empty to disable proxy configuration.
 
 ## Deploy
 
+### Automated (recommended)
+
+`deploy.sh` downloads the latest Intersight VA image from Cisco Software Central, uploads it to OpenStack, then runs `terraform apply` — all in one step.
+
+**Requirements:**
+
+1. Cisco API credentials from [apiconsole.cisco.com](https://apiconsole.cisco.com)
+2. OpenStack environment loaded via `setup_env.sh`
+
+```bash
+# Set Cisco API credentials
+export CISCO_CLIENT_ID=your-client-id
+export CISCO_CLIENT_SECRET=your-client-secret
+
+# Load OpenStack auth
+source setup_env.sh ~/.config/openstack/clouds.yaml openstack
+
+# Run full deploy
+bash deploy.sh
+```
+
+The script will:
+1. Authenticate with Cisco Software Central
+2. Find the latest Intersight VA release (qcow2 preferred, OVA fallback)
+3. Skip download if image already exists in OpenStack
+4. Convert OVA → qcow2 if needed (requires `qemu-img`: `brew install qemu`)
+5. Upload image to OpenStack
+6. Run `terraform apply`
+
+### Manual
+
 ```bash
 terraform init
 terraform plan
