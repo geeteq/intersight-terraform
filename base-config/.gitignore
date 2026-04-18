@@ -3,4 +3,6 @@
 terraform.tfstate
 terraform.tfstate.backup
 terraform.tfvars
+*.auto.tfvars
 secret_key.txt
+.states/

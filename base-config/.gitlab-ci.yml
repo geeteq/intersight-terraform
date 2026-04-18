@@ -1,11 +1,14 @@
 # ---------------------------------------------------------------------------
-# Intersight Base Config — GitLab CI Pipeline
+# Intersight Base Config — Multi-Site GitLab CI Pipeline
 #
 # Required GitLab CI/CD Variables (Settings → CI/CD → Variables):
 #
 #   INTERSIGHT_API_KEY_ID   — Intersight API key ID            (masked)
 #   INTERSIGHT_SECRET_KEY   — Secret key file content          (file type)
-#   TF_VARS_FILE            — Full terraform.tfvars content    (file type)
+#
+# Per-site tfvars files live in sites/<site>.tfvars (committed to repo).
+# Sensitive values (api key, secret key) are injected at runtime.
+# Terraform state is managed per-site via GitLab's managed state backend.
 # ---------------------------------------------------------------------------
 
 default:
@@ -24,20 +27,71 @@ stages:
   - apply
 
 # ---------------------------------------------------------------------------
-# Setup: write tfvars and secret key from CI variables
+# Reusable setup — injects secrets into tfvars, inits with per-site state
 # ---------------------------------------------------------------------------
 .setup: &setup
-  - cp "$TF_VARS_FILE" terraform.tfvars
   - cp "$INTERSIGHT_SECRET_KEY" secret_key.txt
+  - cp "sites/${SITE}.tfvars" site.auto.tfvars
   - |
-    cat >> terraform.tfvars <<EOF
+    cat >> site.auto.tfvars <<EOF
     intersight_api_key_id      = "$INTERSIGHT_API_KEY_ID"
     intersight_secret_key_file = "secret_key.txt"
     EOF
-  - terraform init -input=false
+  - |
+    terraform init -input=false \
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${SITE}" \
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${SITE}/lock" \
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${SITE}/lock" \
+      -backend-config="username=gitlab-ci-token" \
+      -backend-config="password=${CI_JOB_TOKEN}" \
+      -backend-config="lock_method=POST" \
+      -backend-config="unlock_method=DELETE" \
+      -backend-config="retry_wait_min=5"
 
 # ---------------------------------------------------------------------------
-# Validate — runs on every push
+# Job templates
+# ---------------------------------------------------------------------------
+.plan_job:
+  stage: plan
+  script:
+    - *setup
+    - terraform plan -var-file="site.auto.tfvars" -detailed-exitcode -out=tfplan
+  artifacts:
+    paths:
+      - base-config/tfplan
+    expire_in: 1 day
+
+.drift_job:
+  stage: plan
+  script:
+    - *setup
+    - |
+      set +e
+      terraform plan -var-file="site.auto.tfvars" -detailed-exitcode
+      EXIT=$?
+      set -e
+      if [ $EXIT -eq 2 ]; then
+        echo "DRIFT DETECTED on site: $SITE — run enforce job to correct."
+        exit 1
+      elif [ $EXIT -eq 1 ]; then
+        exit 1
+      else
+        echo "No drift — $SITE is in sync."
+      fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  allow_failure: false
+
+.apply_job:
+  stage: apply
+  script:
+    - *setup
+    - terraform apply -var-file="site.auto.tfvars" -auto-approve -input=false
+  when: manual
+  allow_failure: false
+
+# ---------------------------------------------------------------------------
+# Validate — runs on every push (no secrets needed)
 # ---------------------------------------------------------------------------
 validate:
   stage: validate
@@ -49,56 +103,31 @@ validate:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 
 # ---------------------------------------------------------------------------
-# Plan — runs on every push and on schedule (drift detection)
+# Site A
 # ---------------------------------------------------------------------------
-plan:
-  stage: plan
-  script:
-    - *setup
-    - terraform plan -detailed-exitcode -out=tfplan
-  artifacts:
-    paths:
-      - base-config/tfplan
-    expire_in: 1 day
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "push"'
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-
-# ---------------------------------------------------------------------------
-# Drift Check — scheduled nightly, fails pipeline if drift detected
-# ---------------------------------------------------------------------------
-drift_check:
-  stage: plan
-  script:
-    - *setup
-    - |
-      terraform plan -detailed-exitcode
-      EXIT=$?
-      if [ $EXIT -eq 2 ]; then
-        echo "DRIFT DETECTED — Intersight config has diverged from desired state."
-        echo "Run the 'enforce_config' job to correct it."
-        exit 1
-      elif [ $EXIT -eq 1 ]; then
-        echo "Terraform plan failed."
-        exit 1
-      else
-        echo "No drift detected — Intersight config is in sync."
-      fi
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-  allow_failure: false
-
-# ---------------------------------------------------------------------------
-# Apply — manual trigger only (enforce desired state)
-# ---------------------------------------------------------------------------
-enforce_config:
-  stage: apply
-  script:
-    - *setup
-    - terraform apply -auto-approve -input=false
+plan:site-a:
+  extends: .plan_job
+  variables:
+    SITE: site-a
   environment:
-    name: intersight-base-config
+    name: intersight/site-a
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+drift:site-a:
+  extends: .drift_job
+  variables:
+    SITE: site-a
+  environment:
+    name: intersight/site-a
+
+enforce:site-a:
+  extends: .apply_job
+  variables:
+    SITE: site-a
+  environment:
+    name: intersight/site-a
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
       when: manual
@@ -106,4 +135,37 @@ enforce_config:
       when: manual
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
-  allow_failure: false
+
+# ---------------------------------------------------------------------------
+# Site B
+# ---------------------------------------------------------------------------
+plan:site-b:
+  extends: .plan_job
+  variables:
+    SITE: site-b
+  environment:
+    name: intersight/site-b
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+drift:site-b:
+  extends: .drift_job
+  variables:
+    SITE: site-b
+  environment:
+    name: intersight/site-b
+
+enforce:site-b:
+  extends: .apply_job
+  variables:
+    SITE: site-b
+  environment:
+    name: intersight/site-b
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual

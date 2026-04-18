@@ -6,6 +6,8 @@ terraform {
       version = "~> 1.0"
     }
   }
+
+  backend "http" {}
 }
 
 provider "intersight" {
