@@ -18,7 +18,7 @@ provider "openstack" {
 # ---------------------------------------------------------------------------
 
 data "openstack_images_image_v2" "disks" {
-  count       = var.disk_count
+  count       = length(var.disk_sizes)
   name        = "${var.image_name}-${count.index + 1}"
   visibility  = "private"
   most_recent = true
@@ -115,7 +115,7 @@ locals {
 # ---------------------------------------------------------------------------
 
 resource "openstack_blockstorage_volume_v3" "disks" {
-  count    = var.disk_count
+  count    = length(var.disk_sizes)
   name     = "${var.hostname}-disk-${count.index + 1}"
   size     = var.disk_sizes[count.index]
   image_id = data.openstack_images_image_v2.disks[count.index].id
@@ -132,7 +132,7 @@ resource "openstack_compute_instance_v2" "intersight" {
   user_data         = local.user_data
 
   dynamic "block_device" {
-    for_each = range(var.disk_count)
+    for_each = range(length(var.disk_sizes))
     content {
       uuid                  = openstack_blockstorage_volume_v3.disks[block_device.value].id
       source_type           = "volume"

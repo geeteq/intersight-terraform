@@ -96,16 +96,9 @@ variable "flavor_name" {
   default     = "8cpu-32G-0G"
 }
 
-variable "disk_count" {
-  description = "Number of disk images in the Intersight VA package"
-  type        = number
-  default     = 8
-}
-
 variable "disk_sizes" {
-  description = "Volume size in GB for each disk, in boot order. Must have disk_count entries."
+  description = "Volume size in GB for each disk in boot order. Auto-populated by deploy.sh from Glance virtual sizes."
   type        = list(number)
-  default     = [500, 500, 500, 500, 500, 500, 500, 500]
 }
 
 variable "availability_zone" {

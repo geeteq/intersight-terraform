@@ -45,16 +45,18 @@ Disk images are uploaded as `{image_name}-1` through `{image_name}-8` and volume
 
 ### Disk sizes
 
-`deploy.sh` automatically reads the virtual size of each disk from Glance after upload and writes `disk_sizes.auto.tfvars`. Terraform picks this up without any manual configuration.
+`deploy.sh` reads the virtual size of each disk from Glance after upload and writes `disk_sizes.auto.tfvars`. Terraform picks this up automatically — no manual configuration needed.
 
-If deploying Terraform manually (without `deploy.sh`), add to `terraform.tfvars`:
+If deploying Terraform manually without `deploy.sh`, create `disk_sizes.auto.tfvars` yourself:
 
-```hcl
-disk_count = 8
-disk_sizes = [3000, 200, 200, 200, 200, 200, 200, 200]  # GB — match qcow2 virtual sizes
+```bash
+# Check virtual sizes
+for i in $(seq 1 8); do
+  openstack image show "${image_name}-${i}" -c virtual_size -f value
+done
+
+# Then write disk_sizes.auto.tfvars with sizes rounded up to GB
 ```
-
-Run `openstack image show {image_name}-1 -c virtual_size` to check the virtual size of each image.
 
 ### Proxy
 
