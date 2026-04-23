@@ -5,9 +5,12 @@ hostname       = "intersight-appliance"
 admin_password = "ChangeMe123!"   # initial admin password for the web UI
 
 # --- Compute ---
-image_name        = "intersight-appliance"   # image name as imported in OpenStack
-flavor_name       = "8cpu-32G-0G"            # minimum 8 vCPU / 32GB RAM
-root_volume_size  = 500                      # minimum 500GB
+image_name  = "intersight-appliance"   # base name; disks uploaded as intersight-appliance-1, -2, ...
+flavor_name = "8cpu-32G-0G"            # minimum 8 vCPU / 32GB RAM
+
+# One entry per disk — Intersight VA ships with 8 disks
+disk_count = 8
+disk_sizes = [500, 500, 500, 500, 500, 500, 500, 500]
 availability_zone = "nova"
 
 # --- Network ---

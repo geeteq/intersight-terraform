@@ -96,10 +96,16 @@ variable "flavor_name" {
   default     = "8cpu-32G-0G"
 }
 
-variable "root_volume_size" {
-  description = "Root volume size in GB — Intersight requires minimum 500GB"
+variable "disk_count" {
+  description = "Number of disk images in the Intersight VA package"
   type        = number
-  default     = 500
+  default     = 8
+}
+
+variable "disk_sizes" {
+  description = "Volume size in GB for each disk, in boot order. Must have disk_count entries."
+  type        = list(number)
+  default     = [500, 500, 500, 500, 500, 500, 500, 500]
 }
 
 variable "availability_zone" {

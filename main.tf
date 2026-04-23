@@ -16,8 +16,9 @@ provider "openstack" {
 # Intersight Appliance image (pre-imported into OpenStack)
 # ---------------------------------------------------------------------------
 
-data "openstack_images_image_v2" "intersight" {
-  name        = var.image_name
+data "openstack_images_image_v2" "disks" {
+  count       = var.disk_count
+  name        = "${var.image_name}-${count.index + 1}"
   visibility  = "private"
   most_recent = true
 }
@@ -118,14 +119,16 @@ resource "openstack_compute_instance_v2" "intersight" {
   availability_zone = var.availability_zone
   user_data         = local.user_data
 
-  # Boot from volume — Intersight appliance requires large root disk
-  block_device {
-    uuid                  = data.openstack_images_image_v2.intersight.id
-    source_type           = "image"
-    destination_type      = "volume"
-    volume_size           = var.root_volume_size
-    boot_index            = 0
-    delete_on_termination = true
+  dynamic "block_device" {
+    for_each = range(var.disk_count)
+    content {
+      uuid                  = data.openstack_images_image_v2.disks[block_device.value].id
+      source_type           = "image"
+      destination_type      = "volume"
+      volume_size           = var.disk_sizes[block_device.value]
+      boot_index            = block_device.value
+      delete_on_termination = true
+    }
   }
 
   network {

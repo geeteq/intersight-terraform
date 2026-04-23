@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Uploads a Cisco Intersight Virtual Appliance image to OpenStack and runs
-# terraform apply.
+# Uploads Cisco Intersight Virtual Appliance disk images to OpenStack and
+# runs terraform apply.
+#
+# The Intersight VA ships as a tar containing multiple qcow2 disk images.
+# Each disk is uploaded as {IMAGE_NAME}-1, {IMAGE_NAME}-2, etc.
 #
 # Two modes:
 #   1. Local file:  set IMAGE_FILE=/path/to/intersight.tar (skips Cisco download)
@@ -25,10 +28,9 @@ if [[ -z "${IMAGE_NAME:-}" ]]; then
   IMAGE_NAME=$(grep -E '^\s*image_name\s*=' "${TFVARS}" 2>/dev/null | cut -d'"' -f2 || true)
   IMAGE_NAME="${IMAGE_NAME:-intersight-appliance}"
 fi
+
 CISCO_API_TOKEN_URL="https://id.cisco.com/oauth2/default/v1/token"
 CISCO_SOFTWARE_API="https://apix.cisco.com/software/v4.0"
-
-# Intersight Virtual Appliance MDF ID on Cisco Software Central
 INTERSIGHT_MDF_ID="286320499"
 
 # ---------------------------------------------------------------------------
@@ -45,11 +47,17 @@ if ! command -v python3 &>/dev/null; then
   exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Step 1 — Resolve local image file or download from Cisco
-# ---------------------------------------------------------------------------
+if ! command -v openstack &>/dev/null; then
+  echo "ERROR: 'openstack' CLI is required for image upload."
+  echo "Install with: pip install python-openstackclient"
+  exit 1
+fi
 
 mkdir -p "${DOWNLOAD_DIR}"
+
+# ---------------------------------------------------------------------------
+# Step 1 — Resolve disk image files into DISK_FILES array
+# ---------------------------------------------------------------------------
 
 if [[ -n "${IMAGE_FILE:-}" ]]; then
   # ---- Local file mode ----
@@ -60,25 +68,25 @@ if [[ -n "${IMAGE_FILE:-}" ]]; then
     exit 1
   fi
 
-  echo "Image file: ${IMAGE_FILE}"
-  LOCAL_FILE="${IMAGE_FILE}"
-
-  # Extract tar archives (Cisco packages qcow2/vmdk inside a tar)
   if [[ "${IMAGE_FILE}" == *.tar || "${IMAGE_FILE}" == *.tar.gz || "${IMAGE_FILE}" == *.tgz ]]; then
     echo "Extracting tar archive ..."
     tar -xf "${IMAGE_FILE}" -C "${DOWNLOAD_DIR}"
 
-    # Find qcow2 first, then vmdk, then ova inside the extracted contents
-    EXTRACTED=$(find "${DOWNLOAD_DIR}" \( -name "*.qcow2" -o -name "*.vmdk" -o -name "*.ova" \) | head -1)
-    if [[ -z "${EXTRACTED}" ]]; then
+    mapfile -t DISK_FILES < <(find "${DOWNLOAD_DIR}" -name "*.qcow2" | sort)
+    if [[ ${#DISK_FILES[@]} -eq 0 ]]; then
+      mapfile -t DISK_FILES < <(find "${DOWNLOAD_DIR}" \( -name "*.vmdk" -o -name "*.ova" \) | sort)
+    fi
+    if [[ ${#DISK_FILES[@]} -eq 0 ]]; then
       echo "ERROR: No qcow2, vmdk, or ova found inside ${IMAGE_FILE}"
       exit 1
     fi
-    echo "Found image: ${EXTRACTED}"
-    LOCAL_FILE="${EXTRACTED}"
+  else
+    DISK_FILES=("${IMAGE_FILE}")
   fi
 
-  SKIP_UPLOAD_CHECK="no"
+  echo "Found ${#DISK_FILES[@]} disk image(s):"
+  for f in "${DISK_FILES[@]}"; do echo "  $(basename "${f}")"; done
+
 else
   # ---- Cisco download mode ----
   for var in CISCO_CLIENT_ID CISCO_CLIENT_SECRET; do
@@ -100,8 +108,7 @@ else
   echo "=== Step 1: Authenticating with Cisco Software Central ==="
 
   CISCO_TOKEN=$(python3 - <<PYEOF
-import sys
-import requests
+import sys, requests
 
 resp = requests.post(
     "${CISCO_API_TOKEN_URL}",
@@ -112,29 +119,23 @@ resp = requests.post(
     },
     timeout=30,
 )
-
 if resp.status_code != 200:
     print(f"ERROR: Cisco auth failed: {resp.status_code} {resp.text}", file=sys.stderr)
     sys.exit(1)
-
 print(resp.json()["access_token"])
 PYEOF
 )
-
   echo "Authentication successful."
 
   echo ""
   echo "=== Step 2: Querying latest Intersight Virtual Appliance release ==="
 
   read LATEST_VERSION DOWNLOAD_URL FILENAME < <(python3 - <<PYEOF
-import sys
-import requests
+import sys, requests
 
 headers = {"Authorization": f"Bearer ${CISCO_TOKEN}"}
 
-releases_url = "${CISCO_SOFTWARE_API}/metadata/${INTERSIGHT_MDF_ID}/releases"
-resp = requests.get(releases_url, headers=headers, timeout=30)
-
+resp = requests.get("${CISCO_SOFTWARE_API}/metadata/${INTERSIGHT_MDF_ID}/releases", headers=headers, timeout=30)
 if resp.status_code != 200:
     print(f"ERROR: Failed to fetch releases: {resp.status_code} {resp.text}", file=sys.stderr)
     sys.exit(1)
@@ -144,22 +145,17 @@ if not releases:
     print("ERROR: No releases found for Intersight VA", file=sys.stderr)
     sys.exit(1)
 
-latest = releases[0]
-version = latest.get("releaseVersion", "unknown")
+version = releases[0].get("releaseVersion", "unknown")
 
-files_url = f"${CISCO_SOFTWARE_API}/metadata/${INTERSIGHT_MDF_ID}/releases/{version}/files"
-resp = requests.get(files_url, headers=headers, timeout=30)
-
+resp = requests.get(f"${CISCO_SOFTWARE_API}/metadata/${INTERSIGHT_MDF_ID}/releases/{version}/files", headers=headers, timeout=30)
 if resp.status_code != 200:
     print(f"ERROR: Failed to fetch files: {resp.status_code} {resp.text}", file=sys.stderr)
     sys.exit(1)
 
 files = resp.json().get("files", [])
-
 qcow2 = next((f for f in files if f["fileName"].endswith(".qcow2")), None)
 ova   = next((f for f in files if f["fileName"].endswith(".ova")), None)
 target = qcow2 or ova
-
 if not target:
     print("ERROR: No qcow2 or OVA found for this release", file=sys.stderr)
     sys.exit(1)
@@ -167,58 +163,21 @@ if not target:
 print(version, target["downloadURL"], target["fileName"])
 PYEOF
 )
-
   echo "Latest version: ${LATEST_VERSION}"
   echo "File:           ${FILENAME}"
 
-  SKIP_UPLOAD_CHECK="yes"
-fi
+  echo ""
+  echo "=== Step 4: Downloading Intersight VA ${LATEST_VERSION} ==="
 
-# ---------------------------------------------------------------------------
-# Step 3 — Check if image already exists in OpenStack
-# ---------------------------------------------------------------------------
+  LOCAL_FILE="${DOWNLOAD_DIR}/${FILENAME}"
 
-echo ""
-echo "=== Step 3: Checking if image already exists in OpenStack ==="
-
-IMAGE_EXISTS=$(python3 - <<PYEOF
-import openstack
-conn = openstack.connect(load_envvars=True, insecure=True)
-image = conn.image.find_image("${IMAGE_NAME}", ignore_missing=True)
-if image and image.status == "active" and (image.size or 0) > 100 * 1024 * 1024:
-    print("yes")
-else:
-    if image:
-        print(f"Existing image '${IMAGE_NAME}' is invalid (status={image.status}, size={image.size}) — will re-upload.", flush=True)
-        conn.image.delete_image(image.id)
-    print("no")
-PYEOF
-)
-
-if [[ "${IMAGE_EXISTS}" == "yes" ]]; then
-  echo "Image '${IMAGE_NAME}' already exists in OpenStack and looks valid — skipping upload."
-else
-  if [[ "${SKIP_UPLOAD_CHECK}" == "yes" ]]; then
-    # -------------------------------------------------------------------------
-    # Step 4 — Download the image (Cisco mode only)
-    # -------------------------------------------------------------------------
-
-    echo ""
-    echo "=== Step 4: Downloading Intersight VA ${LATEST_VERSION} ==="
-
-    LOCAL_FILE="${DOWNLOAD_DIR}/${FILENAME}"
-
-    python3 - <<PYEOF
-import sys
-import requests
+  python3 - <<PYEOF
+import sys, requests
 
 headers = {"Authorization": f"Bearer ${CISCO_TOKEN}"}
-url = "${DOWNLOAD_URL}"
+print(f"Downloading: ${LOCAL_FILE}")
 
-print(f"Downloading from: {url}")
-print(f"Destination:      ${LOCAL_FILE}")
-
-with requests.get(url, headers=headers, stream=True, timeout=300) as r:
+with requests.get("${DOWNLOAD_URL}", headers=headers, stream=True, timeout=300) as r:
     r.raise_for_status()
     total = int(r.headers.get("content-length", 0))
     downloaded = 0
@@ -229,26 +188,11 @@ with requests.get(url, headers=headers, stream=True, timeout=300) as r:
             if total:
                 pct = downloaded * 100 // total
                 print(f"  {pct}% ({downloaded // 1024 // 1024} MB / {total // 1024 // 1024} MB)", end="\r")
-
-print(f"\nDownload complete: ${LOCAL_FILE}")
+print(f"\nDownload complete.")
 PYEOF
 
-    if [[ "${FILENAME}" == *.ova ]]; then
-      echo "Converting OVA to qcow2 ..."
-      if ! command -v qemu-img &>/dev/null; then
-        echo "ERROR: qemu-img not found. Install with: brew install qemu"
-        exit 1
-      fi
-      QCOW2_FILE="${DOWNLOAD_DIR}/intersight-appliance.qcow2"
-      qemu-img convert -f vmdk -O qcow2 "${LOCAL_FILE}" "${QCOW2_FILE}"
-      LOCAL_FILE="${QCOW2_FILE}"
-      echo "Conversion complete: ${LOCAL_FILE}"
-    fi
-  fi
-
-  # Convert vmdk to qcow2 if the extracted/provided file is a vmdk
-  if [[ "${LOCAL_FILE}" == *.vmdk ]]; then
-    echo "Converting vmdk to qcow2 ..."
+  if [[ "${FILENAME}" == *.ova ]]; then
+    echo "Converting OVA to qcow2 ..."
     if ! command -v qemu-img &>/dev/null; then
       echo "ERROR: qemu-img not found. Install with: brew install qemu"
       exit 1
@@ -256,40 +200,95 @@ PYEOF
     QCOW2_FILE="${DOWNLOAD_DIR}/intersight-appliance.qcow2"
     qemu-img convert -f vmdk -O qcow2 "${LOCAL_FILE}" "${QCOW2_FILE}"
     LOCAL_FILE="${QCOW2_FILE}"
-    echo "Conversion complete: ${LOCAL_FILE}"
+    echo "Conversion complete."
   fi
 
-  # -------------------------------------------------------------------------
-  # Step 5 — Upload image to OpenStack
-  # -------------------------------------------------------------------------
+  DISK_FILES=("${LOCAL_FILE}")
+fi
 
+# ---------------------------------------------------------------------------
+# Step 3 — Check which disk images are missing in OpenStack
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "=== Step 3: Checking disk images in OpenStack ==="
+
+MISSING_INDICES=()
+for i in "${!DISK_FILES[@]}"; do
+  DISK_NUM=$((i + 1))
+  DISK_NAME="${IMAGE_NAME}-${DISK_NUM}"
+
+  EXISTS=$(python3 - <<PYEOF
+import openstack
+conn = openstack.connect(load_envvars=True, insecure=True)
+image = conn.image.find_image("${DISK_NAME}", ignore_missing=True)
+if image and image.status == "active" and (image.size or 0) > 100 * 1024 * 1024:
+    print("yes")
+else:
+    if image:
+        print(f"  Deleting invalid image '${DISK_NAME}' (status={image.status}, size={image.size}) ...", flush=True)
+        conn.image.delete_image(image.id)
+    print("no")
+PYEOF
+)
+
+  if [[ "${EXISTS}" == "yes" ]]; then
+    echo "  ${DISK_NAME}: exists — skipping"
+  else
+    echo "  ${DISK_NAME}: will upload"
+    MISSING_INDICES+=("${i}")
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Step 5 — Upload missing disk images
+# ---------------------------------------------------------------------------
+
+if [[ ${#MISSING_INDICES[@]} -gt 0 ]]; then
   echo ""
-  echo "=== Step 5: Uploading image to OpenStack ==="
+  echo "=== Step 5: Uploading ${#MISSING_INDICES[@]} disk image(s) to OpenStack ==="
 
-  # Determine disk format from file extension
-  case "${LOCAL_FILE}" in
-    *.qcow2) DISK_FORMAT="qcow2" ;;
-    *.raw)   DISK_FORMAT="raw" ;;
-    *)       DISK_FORMAT="qcow2" ;;
-  esac
+  for i in "${MISSING_INDICES[@]}"; do
+    DISK_FILE="${DISK_FILES[$i]}"
+    DISK_NUM=$((i + 1))
+    DISK_NAME="${IMAGE_NAME}-${DISK_NUM}"
 
-  if ! command -v openstack &>/dev/null; then
-    echo "ERROR: 'openstack' CLI is required for image upload."
-    echo "Install with: pip install python-openstackclient"
-    exit 1
-  fi
+    # Convert vmdk to qcow2 if needed
+    if [[ "${DISK_FILE}" == *.vmdk ]]; then
+      if ! command -v qemu-img &>/dev/null; then
+        echo "ERROR: qemu-img not found. Install with: brew install qemu"
+        exit 1
+      fi
+      QCOW2_FILE="${DOWNLOAD_DIR}/disk-${DISK_NUM}.qcow2"
+      echo "  Converting $(basename "${DISK_FILE}") to qcow2 ..."
+      qemu-img convert -f vmdk -O qcow2 "${DISK_FILE}" "${QCOW2_FILE}"
+      DISK_FILE="${QCOW2_FILE}"
+    fi
 
-  openstack image create "${IMAGE_NAME}" \
-    --file "${LOCAL_FILE}" \
-    --disk-format "${DISK_FORMAT}" \
-    --container-format bare \
-    --private \
-    --progress
+    case "${DISK_FILE}" in
+      *.qcow2) DISK_FORMAT="qcow2" ;;
+      *.raw)   DISK_FORMAT="raw"   ;;
+      *)       DISK_FORMAT="qcow2" ;;
+    esac
+
+    echo ""
+    echo "  Uploading disk ${DISK_NUM}/${#DISK_FILES[@]}: ${DISK_NAME}"
+    echo "  Source: $(basename "${DISK_FILE}")"
+
+    openstack image create "${DISK_NAME}" \
+      --file "${DISK_FILE}" \
+      --disk-format "${DISK_FORMAT}" \
+      --container-format bare \
+      --private \
+      --progress
+  done
 
   if [[ -z "${IMAGE_FILE:-}" ]]; then
     echo "Cleaning up temporary files ..."
     rm -rf "${DOWNLOAD_DIR}"
   fi
+else
+  echo "All disk images already exist in OpenStack — skipping upload."
 fi
 
 # ---------------------------------------------------------------------------
