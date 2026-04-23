@@ -128,6 +128,8 @@ resource "openstack_compute_instance_v2" "intersight" {
       destination_type      = "volume"
       volume_size           = var.disk_sizes[block_device.value]
       boot_index            = block_device.value == 0 ? 0 : -1
+      disk_bus              = "scsi"
+      device_type           = "disk"
       delete_on_termination = true
     }
   }

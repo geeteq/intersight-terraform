@@ -73,12 +73,12 @@ if [[ -n "${IMAGE_FILE:-}" ]]; then
     tar -xf "${IMAGE_FILE}" -C "${DOWNLOAD_DIR}"
 
     DISK_FILES=()
-    while IFS= read -r f; do DISK_FILES+=("$f"); done < <(find "${DOWNLOAD_DIR}" -name "*.qcow2" | sort)
+    while IFS= read -r f; do DISK_FILES+=("$f"); done < <(find "${DOWNLOAD_DIR}" \( -name "*.qcow2" -o -name "*.qcow" \) | sort -V)
     if [[ ${#DISK_FILES[@]} -eq 0 ]]; then
-      while IFS= read -r f; do DISK_FILES+=("$f"); done < <(find "${DOWNLOAD_DIR}" \( -name "*.vmdk" -o -name "*.ova" \) | sort)
+      while IFS= read -r f; do DISK_FILES+=("$f"); done < <(find "${DOWNLOAD_DIR}" \( -name "*.vmdk" -o -name "*.ova" \) | sort -V)
     fi
     if [[ ${#DISK_FILES[@]} -eq 0 ]]; then
-      echo "ERROR: No qcow2, vmdk, or ova found inside ${IMAGE_FILE}"
+      echo "ERROR: No qcow2, qcow, vmdk, or ova found inside ${IMAGE_FILE}"
       exit 1
     fi
   else
@@ -268,6 +268,7 @@ if [[ ${#MISSING_INDICES[@]} -gt 0 ]]; then
 
     case "${DISK_FILE}" in
       *.qcow2) DISK_FORMAT="qcow2" ;;
+      *.qcow)  DISK_FORMAT="qcow2" ;;
       *.raw)   DISK_FORMAT="raw"   ;;
       *)       DISK_FORMAT="qcow2" ;;
     esac
