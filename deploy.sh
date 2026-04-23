@@ -182,15 +182,21 @@ echo ""
 echo "=== Step 3: Checking if image already exists in OpenStack ==="
 
 IMAGE_EXISTS=$(python3 - <<PYEOF
-import openstack, os
+import openstack
 conn = openstack.connect(load_envvars=True, insecure=True)
 image = conn.image.find_image("${IMAGE_NAME}", ignore_missing=True)
-print("yes" if image else "no")
+if image and image.status == "active" and (image.size or 0) > 100 * 1024 * 1024:
+    print("yes")
+else:
+    if image:
+        print(f"Existing image '${IMAGE_NAME}' is invalid (status={image.status}, size={image.size}) — will re-upload.", flush=True)
+        conn.image.delete_image(image.id)
+    print("no")
 PYEOF
 )
 
 if [[ "${IMAGE_EXISTS}" == "yes" ]]; then
-  echo "Image '${IMAGE_NAME}' already exists in OpenStack — skipping upload."
+  echo "Image '${IMAGE_NAME}' already exists in OpenStack and looks valid — skipping upload."
 else
   if [[ "${SKIP_UPLOAD_CHECK}" == "yes" ]]; then
     # -------------------------------------------------------------------------
