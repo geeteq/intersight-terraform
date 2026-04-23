@@ -274,10 +274,8 @@ image = conn.image.create_image(
     disk_format="${DISK_FORMAT}",
     container_format="bare",
     visibility="private",
+    filename="${LOCAL_FILE}",
 )
-
-with open("${LOCAL_FILE}", "rb") as f:
-    conn.image.upload_image(image, data=f)
 
 image = conn.image.get_image(image.id)
 print(f"Upload complete.")
