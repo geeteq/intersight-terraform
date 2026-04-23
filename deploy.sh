@@ -17,8 +17,14 @@
 set -euo pipefail
 
 TFVARS="${1:-terraform.tfvars}"
-IMAGE_NAME="intersight-appliance"
 DOWNLOAD_DIR="${TMPDIR:-/tmp}/intersight-download"
+
+# Read image_name from tfvars so it matches what Terraform expects.
+# Override by setting IMAGE_NAME in the environment.
+if [[ -z "${IMAGE_NAME:-}" ]]; then
+  IMAGE_NAME=$(grep -E '^\s*image_name\s*=' "${TFVARS}" 2>/dev/null | head -1 | sed 's/.*=\s*"\(.*\)".*/\1/')
+  IMAGE_NAME="${IMAGE_NAME:-intersight-appliance}"
+fi
 CISCO_API_TOKEN_URL="https://id.cisco.com/oauth2/default/v1/token"
 CISCO_SOFTWARE_API="https://apix.cisco.com/software/v4.0"
 
