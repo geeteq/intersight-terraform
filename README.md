@@ -15,15 +15,17 @@ Terraform configuration to deploy a Cisco Intersight Virtual Appliance on OpenSt
 
 ## Importing the Intersight Appliance Image
 
-Download the Intersight Virtual Appliance OVA from [Cisco Software Download](https://software.cisco.com) and import it into OpenStack:
+Download the Intersight Virtual Appliance from [Cisco Software Download](https://software.cisco.com) and import it into OpenStack:
 
 ```bash
 openstack image create "intersight-appliance" \
   --file intersight-appliance.qcow2 \
   --disk-format qcow2 \
   --container-format bare \
-  --public
+  --private
 ```
+
+Or use `deploy.sh` (see [Deploy](#deploy)) to handle the upload automatically.
 
 ---
 
@@ -68,32 +70,37 @@ Leave `proxy_host` empty to disable proxy configuration.
 
 ### Automated (recommended)
 
-`deploy.sh` downloads the latest Intersight VA image from Cisco Software Central, uploads it to OpenStack, then runs `terraform apply` — all in one step.
+`deploy.sh` handles image upload to OpenStack (if not already present) and runs `terraform apply` in one step. It supports two modes:
 
-**Requirements:**
-
-1. Cisco API credentials from [apiconsole.cisco.com](https://apiconsole.cisco.com)
-2. OpenStack environment loaded via `setup_env.sh`
+**Option A — Local image file (no Cisco API required):**
 
 ```bash
-# Set Cisco API credentials
-export CISCO_CLIENT_ID=your-client-id
-export CISCO_CLIENT_SECRET=your-client-secret
+export IMAGE_FILE=/path/to/intersight-appliance.tar
 
-# Load OpenStack auth
 source setup_env.sh ~/.config/openstack/clouds.yaml openstack
-
-# Run full deploy
 bash deploy.sh
 ```
 
+Supported formats: `.tar`, `.tar.gz`, `.tgz`, `.qcow2`, `.vmdk`. The script extracts tar archives automatically and converts vmdk → qcow2 if needed (requires `qemu-img`: `brew install qemu`).
+
+**Option B — Auto-download from Cisco Software Central:**
+
+```bash
+export CISCO_CLIENT_ID=your-client-id
+export CISCO_CLIENT_SECRET=your-client-secret
+
+source setup_env.sh ~/.config/openstack/clouds.yaml openstack
+bash deploy.sh
+```
+
+API credentials: [apiconsole.cisco.com](https://apiconsole.cisco.com)
+
 The script will:
-1. Authenticate with Cisco Software Central
-2. Find the latest Intersight VA release (qcow2 preferred, OVA fallback)
-3. Skip download if image already exists in OpenStack
-4. Convert OVA → qcow2 if needed (requires `qemu-img`: `brew install qemu`)
-5. Upload image to OpenStack
-6. Run `terraform apply`
+1. Check if the image already exists in OpenStack (skips upload if so)
+2. Download the latest Intersight VA release from Cisco (qcow2 preferred, OVA fallback)
+3. Convert OVA → qcow2 if needed
+4. Upload image to OpenStack
+5. Run `terraform apply`
 
 ### Manual
 
