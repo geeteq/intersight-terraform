@@ -33,6 +33,10 @@ CISCO_API_TOKEN_URL="https://id.cisco.com/oauth2/default/v1/token"
 CISCO_SOFTWARE_API="https://apix.cisco.com/software/v4.0"
 INTERSIGHT_MDF_ID="286320499"
 
+# Unset proxy for OpenStack/internal connections
+unset HTTPS_PROXY
+unset https_proxy
+
 # ---------------------------------------------------------------------------
 # Checks
 # ---------------------------------------------------------------------------
