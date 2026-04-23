@@ -72,9 +72,10 @@ if [[ -n "${IMAGE_FILE:-}" ]]; then
     echo "Extracting tar archive ..."
     tar -xf "${IMAGE_FILE}" -C "${DOWNLOAD_DIR}"
 
-    mapfile -t DISK_FILES < <(find "${DOWNLOAD_DIR}" -name "*.qcow2" | sort)
+    DISK_FILES=()
+    while IFS= read -r f; do DISK_FILES+=("$f"); done < <(find "${DOWNLOAD_DIR}" -name "*.qcow2" | sort)
     if [[ ${#DISK_FILES[@]} -eq 0 ]]; then
-      mapfile -t DISK_FILES < <(find "${DOWNLOAD_DIR}" \( -name "*.vmdk" -o -name "*.ova" \) | sort)
+      while IFS= read -r f; do DISK_FILES+=("$f"); done < <(find "${DOWNLOAD_DIR}" \( -name "*.vmdk" -o -name "*.ova" \) | sort)
     fi
     if [[ ${#DISK_FILES[@]} -eq 0 ]]; then
       echo "ERROR: No qcow2, vmdk, or ova found inside ${IMAGE_FILE}"
