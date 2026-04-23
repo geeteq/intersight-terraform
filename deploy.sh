@@ -59,6 +59,44 @@ fi
 mkdir -p "${DOWNLOAD_DIR}"
 
 # ---------------------------------------------------------------------------
+# Step 0 — Clean slate: destroy existing resources and images
+# ---------------------------------------------------------------------------
+
+echo "=== Step 0: Cleaning up existing resources ==="
+
+# Destroy Terraform-managed resources if any exist in state
+STATE_RESOURCES=$(terraform state list 2>/dev/null || true)
+if [[ -n "${STATE_RESOURCES}" ]]; then
+  echo "  Destroying existing Terraform resources ..."
+  DESTROY_ARGS=(-var-file="${TFVARS}" -auto-approve)
+  if [[ ! -f "disk_sizes.auto.tfvars" ]]; then
+    DESTROY_ARGS+=(-var 'disk_sizes=[]')
+  fi
+  terraform destroy "${DESTROY_ARGS[@]}" || true
+else
+  echo "  No Terraform state found — skipping destroy"
+fi
+
+# Remove stale auto-generated tfvars so sizes are recomputed from fresh images
+rm -f disk_sizes.auto.tfvars
+
+# Delete all Glance images matching {IMAGE_NAME}-*
+echo "  Removing Glance images '${IMAGE_NAME}-*' ..."
+python3 - <<PYEOF
+import openstack
+conn = openstack.connect(load_envvars=True, insecure=True)
+images = [i for i in conn.image.images(visibility="private")
+          if i.name and i.name.startswith("${IMAGE_NAME}-")]
+if not images:
+    print("  No matching images found")
+for image in images:
+    print(f"  Deleting: {image.name} ({image.id})")
+    conn.image.delete_image(image.id)
+PYEOF
+
+echo ""
+
+# ---------------------------------------------------------------------------
 # Step 1 — Resolve disk image files into DISK_FILES array
 # ---------------------------------------------------------------------------
 
