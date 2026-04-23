@@ -1,37 +1,24 @@
 # intersight-terraform
 
-Terraform configuration to deploy a Cisco Intersight Virtual Appliance on OpenStack with basic default settings.
+Terraform configuration to deploy a Cisco Intersight Virtual Appliance on OpenStack.
+
+The Intersight VA KVM package ships as a tar archive containing 8 qcow2 disk images. `deploy.sh` uploads each disk to OpenStack Glance, then Terraform creates Cinder volumes from those images and boots the instance with all 8 disks attached over SCSI.
 
 ---
 
 ## Prerequisites
 
 - Terraform >= 1.3
-- Intersight Virtual Appliance image imported into OpenStack
-- OpenStack application credential in `clouds.yaml`
-- Minimum compute: 8 vCPU / 32GB RAM / 500GB disk
-
----
-
-## Importing the Intersight Appliance Image
-
-Download the Intersight Virtual Appliance from [Cisco Software Download](https://software.cisco.com) and import it into OpenStack:
-
-```bash
-openstack image create "intersight-appliance" \
-  --file intersight-appliance.qcow2 \
-  --disk-format qcow2 \
-  --container-format bare \
-  --private
-```
-
-Or use `deploy.sh` (see [Deploy](#deploy)) to handle the upload automatically.
+- Python 3 with `pip install openstacksdk requests python-openstackclient`
+- OpenStack environment loaded via `clouds.yaml`
+- Minimum flavor: 8 vCPU / 32 GB RAM
+- Cinder quota sufficient for 8 volumes (default 500 GB each = 4 TB total)
 
 ---
 
 ## Authentication
 
-Set up OpenStack credentials via `clouds.yaml` and export environment variables:
+Load OpenStack credentials before running any commands:
 
 ```bash
 source setup_env.sh ~/.config/openstack/clouds.yaml openstack
@@ -45,24 +32,36 @@ source setup_env.sh ~/.config/openstack/clouds.yaml openstack
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Edit `terraform.tfvars` with your values. Required fields:
+Edit `terraform.tfvars`. Required fields:
 
 | Variable | Description |
 |---|---|
-| `management_network` | OpenStack network for the appliance |
+| `management_network` | OpenStack network for the appliance management interface |
 | `admin_password` | Initial admin password for the web UI |
-| `image_name` | Intersight image name in OpenStack |
+| `image_name` | Base name for disk images in Glance (e.g. `intersight-appliance`) |
+| `availability_zone` | OpenStack availability zone (e.g. `nova`) |
+
+Disk images are uploaded as `{image_name}-1` through `{image_name}-8` and volumes are named `{hostname}-disk-1` through `{hostname}-disk-8`.
+
+### Disk sizes
+
+```hcl
+disk_count = 8
+disk_sizes = [500, 500, 500, 500, 500, 500, 500, 500]  # GB per disk
+```
+
+Adjust `disk_sizes` to match or exceed the virtual size of each qcow2 image. Disk order follows the numerical order of the source files (`disk1.qcow` → disk 1, etc.).
 
 ### Proxy
 
-If your environment requires a proxy for the appliance to reach Cisco cloud (licensing, updates):
+If the appliance needs a proxy to reach Cisco cloud for licensing and updates:
 
 ```hcl
 proxy_host = "proxy.yourdomain.com"
 proxy_port = 3128
 ```
 
-Leave `proxy_host` empty to disable proxy configuration.
+Leave `proxy_host` empty to disable.
 
 ---
 
@@ -70,18 +69,18 @@ Leave `proxy_host` empty to disable proxy configuration.
 
 ### Automated (recommended)
 
-`deploy.sh` handles image upload to OpenStack (if not already present) and runs `terraform apply` in one step. It supports two modes:
+`deploy.sh` uploads disk images to OpenStack Glance and runs `terraform apply` in one step.
 
-**Option A — Local image file (no Cisco API required):**
+**Option A — Local tar file (no Cisco API required):**
 
 ```bash
-export IMAGE_FILE=/path/to/intersight-appliance.tar
+export IMAGE_FILE=/path/to/intersight-appliance-installer-kvm-x.x.x.tar
 
 source setup_env.sh ~/.config/openstack/clouds.yaml openstack
 bash deploy.sh
 ```
 
-Supported formats: `.tar`, `.tar.gz`, `.tgz`, `.qcow2`, `.vmdk`. The script extracts tar archives automatically and converts vmdk → qcow2 if needed (requires `qemu-img`: `brew install qemu`).
+The script extracts the tar, finds all `.qcow` disk files in numerical order, and uploads each one. Already-uploaded disks are skipped; incomplete or undersized images are deleted and re-uploaded.
 
 **Option B — Auto-download from Cisco Software Central:**
 
@@ -93,28 +92,36 @@ source setup_env.sh ~/.config/openstack/clouds.yaml openstack
 bash deploy.sh
 ```
 
-API credentials: [apiconsole.cisco.com](https://apiconsole.cisco.com)
+Register for API credentials at [apiconsole.cisco.com](https://apiconsole.cisco.com).
 
-The script will:
-1. Check if the image already exists in OpenStack (skips upload if so)
-2. Download the latest Intersight VA release from Cisco (qcow2 preferred, OVA fallback)
-3. Convert OVA → qcow2 if needed
-4. Upload image to OpenStack
-5. Run `terraform apply`
+**What the script does:**
+
+1. Extracts the tar and finds all disk images sorted numerically
+2. Checks which disk images are already in Glance (skips valid ones)
+3. Uploads missing disks as `{image_name}-1` … `{image_name}-8`
+4. Runs `terraform apply`
+
+Terraform then:
+
+1. Looks up each Glance image by name
+2. Creates 8 Cinder volumes from those images (visible via `openstack volume list`)
+3. Boots the instance with all 8 volumes attached in order as SCSI disks
 
 ### Manual
 
 ```bash
 terraform init
-terraform plan
-terraform apply
+terraform plan -var-file=terraform.tfvars
+terraform apply -var-file=terraform.tfvars
 ```
+
+Glance images must already be uploaded before running Terraform manually.
 
 ---
 
 ## Accessing the Appliance
 
-The appliance URL is printed in the Terraform output:
+Terraform prints the appliance URL on completion:
 
 ```
 Outputs:
@@ -123,11 +130,11 @@ appliance_url  = "https://203.0.113.10"
 management_ip  = "10.0.0.10"
 ```
 
-Open the URL in a browser and log in with:
+Log in with:
 - **Username:** `admin`
-- **Password:** value of `admin_password` in your `terraform.tfvars`
+- **Password:** value of `admin_password` in `terraform.tfvars`
 
-> Allow 10-15 minutes for the appliance to fully initialise after deployment.
+> Allow 10–15 minutes for the appliance to fully initialise after first boot.
 
 ---
 
@@ -145,5 +152,7 @@ Open the URL in a browser and log in with:
 ## Destroy
 
 ```bash
-terraform destroy
+terraform destroy -var-file=terraform.tfvars
 ```
+
+This destroys the instance and all 8 Cinder volumes.
