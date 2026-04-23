@@ -272,17 +272,40 @@ import openstack, os, sys
 
 conn = openstack.connect(load_envvars=True, insecure=True)
 
+local_file = "${LOCAL_FILE}"
+file_size  = os.path.getsize(local_file)
+
 print(f"Uploading '${IMAGE_NAME}' to OpenStack ...")
-print(f"Source: ${LOCAL_FILE}")
+print(f"Source: {local_file} ({file_size // 1024 // 1024} MB)")
 
 image = conn.image.create_image(
     name="${IMAGE_NAME}",
     disk_format="${DISK_FORMAT}",
     container_format="bare",
     visibility="private",
-    filename="${LOCAL_FILE}",
 )
 
+class ProgressReader:
+    def __init__(self, path):
+        self._f = open(path, "rb")
+        self._total = os.path.getsize(path)
+        self._read = 0
+
+    def read(self, n=-1):
+        chunk = self._f.read(n)
+        self._read += len(chunk)
+        if self._total:
+            pct = self._read * 100 // self._total
+            print(f"  {pct}% ({self._read // 1024 // 1024} MB / {self._total // 1024 // 1024} MB)   ", end="\r", flush=True)
+        return chunk
+
+    def __enter__(self): return self
+    def __exit__(self, *a): self._f.close()
+
+with ProgressReader(local_file) as f:
+    conn.image.upload_image(image.id, data=f)
+
+print()
 image = conn.image.get_image(image.id)
 print(f"Upload complete.")
 print(f"  ID:     {image.id}")
