@@ -9,9 +9,11 @@ image_name        = "intersight-appliance"   # base name; disks uploaded as inte
 flavor_name       = "8cpu-32G-0G"            # minimum 8 vCPU / 32GB RAM
 availability_zone = "nova"                   # OpenStack availability zone
 
-# One entry per disk — Intersight VA ships with 8 disks
-disk_count = 8
-disk_sizes = [500, 500, 500, 500, 500, 500, 500, 500]
+# disk_count and disk_sizes are written automatically to disk_sizes.auto.tfvars
+# by deploy.sh using the actual virtual sizes from Glance. Override here only
+# if deploying Terraform manually without running deploy.sh first.
+# disk_count = 8
+# disk_sizes = [500, 500, 500, 500, 500, 500, 500, 500]
 
 # --- Network ---
 management_network = "your-management-network"
