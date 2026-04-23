@@ -9,7 +9,8 @@ terraform {
 }
 
 provider "openstack" {
-  insecure = true
+  insecure    = true
+  use_octavia = false
 }
 
 # ---------------------------------------------------------------------------
