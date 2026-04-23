@@ -111,6 +111,17 @@ locals {
 }
 
 # ---------------------------------------------------------------------------
+# Cinder volumes — created from Glance images before instance boot
+# ---------------------------------------------------------------------------
+
+resource "openstack_blockstorage_volume_v3" "disks" {
+  count    = var.disk_count
+  name     = "${var.hostname}-disk-${count.index + 1}"
+  size     = var.disk_sizes[count.index]
+  image_id = data.openstack_images_image_v2.disks[count.index].id
+}
+
+# ---------------------------------------------------------------------------
 # Intersight Virtual Appliance instance
 # ---------------------------------------------------------------------------
 
@@ -123,10 +134,9 @@ resource "openstack_compute_instance_v2" "intersight" {
   dynamic "block_device" {
     for_each = range(var.disk_count)
     content {
-      uuid                  = data.openstack_images_image_v2.disks[block_device.value].id
-      source_type           = "image"
+      uuid                  = openstack_blockstorage_volume_v3.disks[block_device.value].id
+      source_type           = "volume"
       destination_type      = "volume"
-      volume_size           = var.disk_sizes[block_device.value]
       boot_index            = block_device.value == 0 ? 0 : -1
       disk_bus              = "scsi"
       device_type           = "disk"
