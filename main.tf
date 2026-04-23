@@ -127,7 +127,7 @@ resource "openstack_compute_instance_v2" "intersight" {
       source_type           = "image"
       destination_type      = "volume"
       volume_size           = var.disk_sizes[block_device.value]
-      boot_index            = block_device.value
+      boot_index            = block_device.value == 0 ? 0 : -1
       delete_on_termination = true
     }
   }
@@ -141,10 +141,6 @@ resource "openstack_compute_instance_v2" "intersight" {
   metadata = {
     provisioned_by = "intersight-terraform"
     managed        = "true"
-  }
-
-  lifecycle {
-    ignore_changes = [block_device]
   }
 }
 
