@@ -221,24 +221,17 @@ for i in "${!DISK_FILES[@]}"; do
   DISK_NUM=$((i + 1))
   DISK_NAME="${IMAGE_NAME}-${DISK_NUM}"
 
-  EXISTS=$(python3 - <<PYEOF
-import openstack
-conn = openstack.connect(load_envvars=True, insecure=True)
-image = conn.image.find_image("${DISK_NAME}", ignore_missing=True)
-if image and image.status == "active" and (image.size or 0) > 100 * 1024 * 1024:
-    print("yes")
-else:
-    if image:
-        print(f"  Deleting invalid image '${DISK_NAME}' ...", flush=True)
-        conn.image.delete_image(image.id)
-    print("no")
-PYEOF
-)
+  STATUS=$(openstack image show "${DISK_NAME}" -f value -c status 2>/dev/null || echo "missing")
 
-  if [[ "${EXISTS}" == "yes" ]]; then
-    echo "  ${DISK_NAME}: exists — skipping"
+  if [[ "${STATUS}" == "active" ]]; then
+    echo "  ${DISK_NAME}: active — skipping"
   else
-    echo "  ${DISK_NAME}: will upload"
+    if [[ "${STATUS}" != "missing" ]]; then
+      echo "  ${DISK_NAME}: status=${STATUS} — deleting and re-uploading"
+      openstack image delete "${DISK_NAME}" 2>/dev/null || true
+    else
+      echo "  ${DISK_NAME}: not found — will upload"
+    fi
     MISSING_INDICES+=("${i}")
   fi
 done
