@@ -500,8 +500,8 @@ echo "=== Step 9: Booting instance ==="
 # Attach pre-created volumes by ID — no image-to-volume conversion at boot time
 BDM_ARGS=()
 for i in "${!VOLUME_IDS[@]}"; do
-  BOOTINDEX=$([[ $i -eq 0 ]] && echo "0" || echo "-1")
-  BDM_ARGS+=(--block-device "source=volume,dest=volume,uuid=${VOLUME_IDS[$i]},bootindex=${BOOTINDEX},bus=scsi,type=disk,delete_on_termination=false")
+  BOOT_INDEX=$([[ $i -eq 0 ]] && echo "0" || echo "-1")
+  BDM_ARGS+=(--block-device "source_type=volume,uuid=${VOLUME_IDS[$i]},boot_index=${BOOT_INDEX},disk_bus=scsi,device_type=disk,delete_on_termination=false")
 done
 
 SERVER_ID=$(openstack server create "${VM_HOSTNAME}" \
