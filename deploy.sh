@@ -102,7 +102,12 @@ if [[ -n "${SERVER_ID}" ]]; then
   done < <(openstack server volume list "${SERVER_ID}" -f value -c ID 2>/dev/null || true)
 
   echo "  Deleting instance ..."
-  openstack server delete "${SERVER_ID}" --wait 2>/dev/null || true
+  openstack server delete "${SERVER_ID}" 2>/dev/null || true
+  for attempt in $(seq 1 24); do
+    STATUS=$(openstack server show "${SERVER_ID}" -f value -c status 2>/dev/null || echo "gone")
+    [[ "${STATUS}" == "gone" ]] && break
+    sleep 5
+  done
   echo "  Instance deleted. Volumes are preserved."
 else
   echo "  No existing instance found."
@@ -516,7 +521,14 @@ SERVER_ID=$(openstack server create "${VM_HOSTNAME}" \
 
 echo "  Instance created: ${SERVER_ID}"
 echo "  Waiting for instance to become active ..."
-openstack server wait --active "${SERVER_ID}" --timeout 300
+for attempt in $(seq 1 60); do
+  STATUS=$(openstack server show "${SERVER_ID}" -f value -c status 2>/dev/null || echo "unknown")
+  case "${STATUS}" in
+    ACTIVE)   echo "  Instance is active."; break ;;
+    ERROR)    echo "ERROR: Instance entered ERROR status."; openstack server show "${SERVER_ID}" -c status -c fault 2>/dev/null; exit 1 ;;
+    *)        printf "\r  Status: ${STATUS} (%d/60) ..." "${attempt}"; sleep 10 ;;
+  esac
+done
 
 MGMT_IP=$(openstack server show "${SERVER_ID}" -f value -c addresses | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 echo "  Management IP: ${MGMT_IP}"
