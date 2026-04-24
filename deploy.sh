@@ -235,18 +235,11 @@ for i in "${!DISK_FILES[@]}"; do
   DISK_NAME="${IMAGE_NAME}-${DISK_NUM}"
 
   STATUS=$(openstack image show "${DISK_NAME}" -f value -c status 2>/dev/null || echo "missing")
-  GLANCE_SIZE=$(openstack image show "${DISK_NAME}" -f value -c size 2>/dev/null || echo "0")
-  LOCAL_SIZE=$(wc -c < "${DISK_FILES[$i]}" | tr -d ' ')
 
-  if [[ "${STATUS}" == "active" && "${GLANCE_SIZE}" == "${LOCAL_SIZE}" ]]; then
-    echo "  ${DISK_NAME}: active, size matches (${GLANCE_SIZE} bytes) — skipping"
+  if [[ "${STATUS}" != "missing" ]]; then
+    echo "  ${DISK_NAME}: already uploaded (${STATUS}) — skipping"
   else
-    if [[ "${STATUS}" != "missing" ]]; then
-      echo "  ${DISK_NAME}: status=${STATUS}, glance=${GLANCE_SIZE}B local=${LOCAL_SIZE}B — deleting and re-uploading"
-      openstack image delete "${DISK_NAME}" 2>/dev/null || true
-    else
-      echo "  ${DISK_NAME}: not found — will upload"
-    fi
+    echo "  ${DISK_NAME}: not found — will upload"
     MISSING_INDICES+=("${i}")
   fi
 done
