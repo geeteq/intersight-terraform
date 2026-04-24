@@ -409,12 +409,12 @@ if [[ "${VOLUMES_NEED_CREATION}" == "true" ]]; then
       exit 1
     fi
 
-    echo "  Creating ${VOL_NAME} (${SIZE} GB) from ${IMG_NAME} ..."
+    echo "  Creating ${VOL_NAME} (${SIZE} GB) from ${IMG_NAME} (${IMG_ID}) ..."
     VOL_ID=$(openstack volume create "${VOL_NAME}" \
       --image "${IMG_ID}" \
       --size "${SIZE}" \
       --availability-zone "${AVAILABILITY_ZONE}" \
-      -f value -c id 2>/dev/null || true)
+      -f value -c id)
 
     if [[ -z "${VOL_ID}" ]]; then
       echo "ERROR: Failed to create volume ${VOL_NAME}."
