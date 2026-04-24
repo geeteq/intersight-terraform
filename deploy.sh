@@ -311,22 +311,33 @@ echo ""
 echo "=== Step 5: Reading virtual disk sizes from Glance ==="
 
 DISK_COUNT="${#DISK_FILES[@]}"
+DISK_SIZES=()
 
-readarray -t DISK_SIZES < <(python3 - <<PYEOF
-import openstack, math
-conn = openstack.connect(load_envvars=True, insecure=True)
-for i in range(1, ${DISK_COUNT} + 1):
-    image = conn.image.find_image("${IMAGE_NAME}-{}".format(i), ignore_missing=True)
-    if image and image.virtual_size:
-        print(math.ceil(image.virtual_size / 1024**3))
-    else:
-        print(500)
-PYEOF
-)
+for i in $(seq 0 $((DISK_COUNT - 1))); do
+  DISK_NUM=$((i + 1))
+  IMG_NAME="${IMAGE_NAME}-${DISK_NUM}"
 
-for i in "${!DISK_SIZES[@]}"; do
-  echo "  ${IMAGE_NAME}-$((i+1)): ${DISK_SIZES[$i]} GB"
+  # Get virtual_size in bytes from Glance, pick first active image
+  IMG_ID=$(openstack image list --name "${IMG_NAME}" --status active \
+           -f value -c ID 2>/dev/null | head -1 || true)
+
+  SIZE_GB=500
+  if [[ -n "${IMG_ID}" ]]; then
+    SIZE_BYTES=$(openstack image show "${IMG_ID}" -f value -c virtual_size 2>/dev/null || echo "")
+    if [[ -n "${SIZE_BYTES}" && "${SIZE_BYTES}" =~ ^[0-9]+$ && "${SIZE_BYTES}" -gt 0 ]]; then
+      # Ceiling division: (bytes + GiB - 1) / GiB
+      SIZE_GB=$(( (SIZE_BYTES + 1073741823) / 1073741824 ))
+    fi
+  fi
+
+  DISK_SIZES+=("${SIZE_GB}")
+  echo "  ${IMG_NAME}: ${SIZE_GB} GB"
 done
+
+if [[ "${#DISK_SIZES[@]}" -ne "${DISK_COUNT}" ]]; then
+  echo "ERROR: Could not resolve sizes for all ${DISK_COUNT} disk images."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Step 6 — Create security group
