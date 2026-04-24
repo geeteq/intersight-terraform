@@ -73,10 +73,27 @@ mkdir -p "${DOWNLOAD_DIR}"
 
 echo "=== Step 0: Cleaning up existing instance and volumes ==="
 
-EXISTING_SERVER=$(openstack server show "${VM_HOSTNAME}" -f value -c id 2>/dev/null || true)
-if [[ -n "${EXISTING_SERVER}" ]]; then
-  echo "  Deleting instance: ${VM_HOSTNAME}"
-  openstack server delete "${VM_HOSTNAME}" --wait
+SERVER_ID=$(openstack server show "${VM_HOSTNAME}" -f value -c id 2>/dev/null || true)
+if [[ -n "${SERVER_ID}" ]]; then
+  # Detach all volumes before deleting the server to prevent delete_on_termination
+  # cascading from volumes back to Glance images on this backend
+  echo "  Stopping instance to allow volume detachment ..."
+  openstack server stop "${SERVER_ID}" 2>/dev/null || true
+  for attempt in $(seq 1 24); do
+    STATUS=$(openstack server show "${SERVER_ID}" -f value -c status 2>/dev/null || echo "gone")
+    [[ "${STATUS}" == "SHUTOFF" || "${STATUS}" == "gone" ]] && break
+    sleep 5
+  done
+
+  echo "  Detaching volumes from instance ..."
+  while IFS= read -r vol_id; do
+    [[ -z "${vol_id}" ]] && continue
+    echo "    Detaching ${vol_id} ..."
+    openstack server remove volume "${SERVER_ID}" "${vol_id}" 2>/dev/null || true
+  done < <(openstack server volume list "${SERVER_ID}" -f value -c ID 2>/dev/null || true)
+
+  echo "  Deleting instance ..."
+  openstack server delete "${SERVER_ID}" --wait 2>/dev/null || true
 else
   echo "  No existing instance found"
 fi
@@ -86,9 +103,7 @@ echo "  Removing volumes matching '${VM_HOSTNAME}-disk-*' ..."
 while IFS=$'\t' read -r vol_id vol_name; do
   [[ -z "${vol_id}" ]] && continue
   echo "  Deleting volume: ${vol_name} (${vol_id})"
-  openstack volume set --detachable "${vol_id}" 2>/dev/null || true
-  openstack volume delete --purge "${vol_id}" 2>/dev/null || \
-    openstack volume delete "${vol_id}" 2>/dev/null || true
+  openstack volume delete "${vol_id}" 2>/dev/null || true
 done < <(openstack volume list --all-projects -f value -c ID -c Name 2>/dev/null \
          | awk -v h="${VM_HOSTNAME}" '$0 ~ h"-disk-" {print $1"\t"$2}' || true)
 
