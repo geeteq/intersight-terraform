@@ -81,13 +81,26 @@ else
   echo "  No existing instance found"
 fi
 
-# Delete volumes named {VM_HOSTNAME}-disk-*
-while IFS= read -r vol_id; do
+# Delete all volumes whose name starts with {VM_HOSTNAME}-disk-
+echo "  Removing volumes matching '${VM_HOSTNAME}-disk-*' ..."
+while IFS=$'\t' read -r vol_id vol_name; do
   [[ -z "${vol_id}" ]] && continue
-  vol_name=$(openstack volume show "${vol_id}" -f value -c name 2>/dev/null || true)
   echo "  Deleting volume: ${vol_name} (${vol_id})"
-  openstack volume delete "${vol_id}" 2>/dev/null || true
-done < <(openstack volume list --name "${VM_HOSTNAME}-disk-%" -f value -c ID 2>/dev/null || true)
+  openstack volume set --detachable "${vol_id}" 2>/dev/null || true
+  openstack volume delete --purge "${vol_id}" 2>/dev/null || \
+    openstack volume delete "${vol_id}" 2>/dev/null || true
+done < <(openstack volume list --all-projects -f value -c ID -c Name 2>/dev/null \
+         | awk -v h="${VM_HOSTNAME}" '$0 ~ h"-disk-" {print $1"\t"$2}' || true)
+
+# Wait until all matching volumes are gone
+echo "  Waiting for volumes to be deleted ..."
+for attempt in $(seq 1 30); do
+  REMAINING=$(openstack volume list -f value -c Name 2>/dev/null \
+              | grep -c "^${VM_HOSTNAME}-disk-" || true)
+  [[ "${REMAINING}" -eq 0 ]] && break
+  echo "    ${REMAINING} volume(s) still deleting ..."
+  sleep 5
+done
 
 echo ""
 
