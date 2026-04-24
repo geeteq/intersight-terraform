@@ -415,7 +415,7 @@ echo "=== Step 9: Booting instance ==="
 BDM_ARGS=()
 for i in "${!IMAGE_IDS[@]}"; do
   BOOTINDEX=$([[ $i -eq 0 ]] && echo "0" || echo "-1")
-  BDM_ARGS+=(--block-device "source=image,dest=volume,uuid=${IMAGE_IDS[$i]},size=${DISK_SIZES[$i]},bootindex=${BOOTINDEX},bus=scsi,type=disk,delete_on_termination=true")
+  BDM_ARGS+=(--block-device "source=image,dest=volume,uuid=${IMAGE_IDS[$i]},size=${DISK_SIZES[$i]},bootindex=${BOOTINDEX},bus=scsi,type=disk,delete_on_termination=false")
 done
 
 SERVER_ID=$(openstack server create "${VM_HOSTNAME}" \
