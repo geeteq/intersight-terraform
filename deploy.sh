@@ -285,6 +285,7 @@ if [[ ${#MISSING_INDICES[@]} -gt 0 ]]; then
       --disk-format "${DISK_FORMAT}" \
       --container-format bare \
       --private \
+      --protected \
       --progress
   done
 
@@ -292,6 +293,18 @@ if [[ ${#MISSING_INDICES[@]} -gt 0 ]]; then
 else
   echo "  All disk images already in Glance."
 fi
+
+# Ensure all disk images are marked protected (covers already-uploaded images)
+echo "  Protecting images from deletion ..."
+for i in $(seq 1 "${#DISK_FILES[@]}"); do
+  IMG_NAME="${IMAGE_NAME}-${i}"
+  IMG_ID=$(openstack image list --name "${IMG_NAME}" --status active \
+           -f value -c ID 2>/dev/null | head -1 || true)
+  if [[ -n "${IMG_ID}" ]]; then
+    openstack image set --protected "${IMG_ID}" 2>/dev/null || true
+    echo "    ${IMG_NAME}: protected"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Step 5 — Read virtual sizes from Glance
