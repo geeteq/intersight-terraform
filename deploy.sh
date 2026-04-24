@@ -68,16 +68,24 @@ done
 mkdir -p "${DOWNLOAD_DIR}"
 
 # ---------------------------------------------------------------------------
-# Step 0 — Remove any existing instance and volumes (images are preserved)
+# Step 0 — Remove existing instance only (volumes are preserved)
 # ---------------------------------------------------------------------------
 
-echo "=== Step 0: Cleaning up existing instance and volumes ==="
+echo "=== Step 0: Checking for existing resources ==="
 
 SERVER_ID=$(openstack server show "${VM_HOSTNAME}" -f value -c id 2>/dev/null || true)
+
 if [[ -n "${SERVER_ID}" ]]; then
-  # Detach all volumes before deleting the server to prevent delete_on_termination
-  # cascading from volumes back to Glance images on this backend
-  echo "  Stopping instance to allow volume detachment ..."
+  echo ""
+  echo "  Existing instance found: ${VM_HOSTNAME} (${SERVER_ID})"
+  echo ""
+  read -r -p "  Delete this instance and proceed with deployment? [y/N]: " CONFIRM
+  if [[ ! "${CONFIRM}" =~ ^[yY]$ ]]; then
+    echo "Aborted."
+    exit 0
+  fi
+
+  echo "  Stopping instance ..."
   openstack server stop "${SERVER_ID}" 2>/dev/null || true
   for attempt in $(seq 1 24); do
     STATUS=$(openstack server show "${SERVER_ID}" -f value -c status 2>/dev/null || echo "gone")
@@ -85,7 +93,7 @@ if [[ -n "${SERVER_ID}" ]]; then
     sleep 5
   done
 
-  echo "  Detaching volumes from instance ..."
+  echo "  Detaching volumes ..."
   while IFS= read -r vol_id; do
     [[ -z "${vol_id}" ]] && continue
     echo "    Detaching ${vol_id} ..."
@@ -94,28 +102,10 @@ if [[ -n "${SERVER_ID}" ]]; then
 
   echo "  Deleting instance ..."
   openstack server delete "${SERVER_ID}" --wait 2>/dev/null || true
+  echo "  Instance deleted. Volumes are preserved."
 else
-  echo "  No existing instance found"
+  echo "  No existing instance found."
 fi
-
-# Delete all volumes whose name starts with {VM_HOSTNAME}-disk-
-echo "  Removing volumes matching '${VM_HOSTNAME}-disk-*' ..."
-while IFS=$'\t' read -r vol_id vol_name; do
-  [[ -z "${vol_id}" ]] && continue
-  echo "  Deleting volume: ${vol_name} (${vol_id})"
-  openstack volume delete "${vol_id}" 2>/dev/null || true
-done < <(openstack volume list --all-projects -f value -c ID -c Name 2>/dev/null \
-         | awk -v h="${VM_HOSTNAME}" '$0 ~ h"-disk-" {print $1"\t"$2}' || true)
-
-# Wait until all matching volumes are gone
-echo "  Waiting for volumes to be deleted ..."
-for attempt in $(seq 1 30); do
-  REMAINING=$(openstack volume list -f value -c Name 2>/dev/null \
-              | grep -c "^${VM_HOSTNAME}-disk-" || true)
-  [[ "${REMAINING}" -eq 0 ]] && break
-  echo "    ${REMAINING} volume(s) still deleting ..."
-  sleep 5
-done
 
 echo ""
 
@@ -360,27 +350,85 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 7 — Resolve Glance image UUIDs
+# Step 7 — Resolve volumes (reuse existing or create from images)
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "=== Step 7: Resolving image UUIDs ==="
+echo "=== Step 7: Resolving volumes ==="
 
-# Resolve image names to UUIDs
-IMAGE_IDS=()
+VOLUME_IDS=()
+VOLUMES_NEED_CREATION=false
+
 for i in "${!DISK_SIZES[@]}"; do
   DISK_NUM=$((i + 1))
-  IMG_NAME="${IMAGE_NAME}-${DISK_NUM}"
-  # Pick the first active image with this name (handles duplicates gracefully)
-  IMG_ID=$(openstack image list --name "${IMG_NAME}" --status active -f value -c ID 2>/dev/null \
-           | head -1 || true)
-  if [[ -z "${IMG_ID}" ]]; then
-    echo "ERROR: No active Glance image '${IMG_NAME}' found. Run deploy.sh with IMAGE_FILE set first."
-    exit 1
+  VOL_NAME="${VM_HOSTNAME}-disk-${DISK_NUM}"
+
+  # Check if a volume with this name already exists and is available
+  EXISTING_VOL=$(openstack volume list --name "${VOL_NAME}" -f value -c ID -c Status 2>/dev/null \
+                 | awk '$2 == "available" {print $1}' | head -1 || true)
+
+  if [[ -n "${EXISTING_VOL}" ]]; then
+    echo "  ${VOL_NAME}: reusing existing volume ${EXISTING_VOL}"
+    VOLUME_IDS+=("${EXISTING_VOL}")
+  else
+    echo "  ${VOL_NAME}: not found — will create from image"
+    VOLUME_IDS+=("")
+    VOLUMES_NEED_CREATION=true
   fi
-  IMAGE_IDS+=("${IMG_ID}")
-  echo "  ${IMG_NAME}: ${IMG_ID}"
 done
+
+# Create any missing volumes from Glance images
+if [[ "${VOLUMES_NEED_CREATION}" == "true" ]]; then
+  echo ""
+  echo "  Creating missing volumes from Glance images ..."
+  for i in "${!VOLUME_IDS[@]}"; do
+    [[ -n "${VOLUME_IDS[$i]}" ]] && continue
+
+    DISK_NUM=$((i + 1))
+    VOL_NAME="${VM_HOSTNAME}-disk-${DISK_NUM}"
+    IMG_NAME="${IMAGE_NAME}-${DISK_NUM}"
+    SIZE="${DISK_SIZES[$i]}"
+
+    IMG_ID=$(openstack image list --name "${IMG_NAME}" --status active -f value -c ID 2>/dev/null \
+             | head -1 || true)
+    if [[ -z "${IMG_ID}" ]]; then
+      echo "ERROR: No active Glance image '${IMG_NAME}' found."
+      exit 1
+    fi
+
+    echo "  Creating ${VOL_NAME} (${SIZE} GB) from ${IMG_NAME} ..."
+    VOL_ID=$(openstack volume create "${VOL_NAME}" \
+      --image "${IMG_ID}" \
+      --size "${SIZE}" \
+      --availability-zone "${AVAILABILITY_ZONE}" \
+      -f value -c id 2>/dev/null || true)
+
+    if [[ -z "${VOL_ID}" ]]; then
+      echo "ERROR: Failed to create volume ${VOL_NAME}."
+      exit 1
+    fi
+    VOLUME_IDS[$i]="${VOL_ID}"
+    echo "    ${VOL_NAME}: ${VOL_ID}"
+  done
+
+  echo "  Waiting for volumes to become available ..."
+  for i in "${!VOLUME_IDS[@]}"; do
+    VOL_ID="${VOLUME_IDS[$i]}"
+    VOL_NAME="${VM_HOSTNAME}-disk-$((i + 1))"
+    for attempt in $(seq 1 60); do
+      STATUS=$(openstack volume show "${VOL_ID}" -f value -c status 2>/dev/null || echo "unknown")
+      case "${STATUS}" in
+        available) echo "    ${VOL_NAME}: available"; break ;;
+        error*)
+          echo "ERROR: Volume ${VOL_NAME} (${VOL_ID}) is in error status."
+          openstack volume show "${VOL_ID}" -c status -c volume_type 2>/dev/null || true
+          exit 1
+          ;;
+        *) printf "\r    ${VOL_NAME}: ${STATUS} (%d/60) ..." "${attempt}"; sleep 10 ;;
+      esac
+    done
+  done
+fi
 
 # ---------------------------------------------------------------------------
 # Step 8 — Generate user data
@@ -436,12 +484,11 @@ echo "${USER_DATA}" > "${USERDATA_FILE}"
 echo ""
 echo "=== Step 9: Booting instance ==="
 
-# Pass images directly to Nova via --block-device so Nova handles
-# volume creation internally — avoids Cinder image-to-volume copy failures
+# Attach pre-created volumes by ID — no image-to-volume conversion at boot time
 BDM_ARGS=()
-for i in "${!IMAGE_IDS[@]}"; do
+for i in "${!VOLUME_IDS[@]}"; do
   BOOTINDEX=$([[ $i -eq 0 ]] && echo "0" || echo "-1")
-  BDM_ARGS+=(--block-device "source=image,dest=volume,uuid=${IMAGE_IDS[$i]},size=${DISK_SIZES[$i]},bootindex=${BOOTINDEX},bus=scsi,type=disk,delete_on_termination=false")
+  BDM_ARGS+=(--block-device "source=volume,dest=volume,uuid=${VOLUME_IDS[$i]},bootindex=${BOOTINDEX},bus=scsi,type=disk,delete_on_termination=false")
 done
 
 SERVER_ID=$(openstack server create "${VM_HOSTNAME}" \
