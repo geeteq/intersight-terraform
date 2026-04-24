@@ -1,0 +1,31 @@
+# Intersight Virtual Appliance — deployment configuration
+# Copy to appliance.conf and edit before running deploy.sh
+
+# --- Appliance identity ---
+VM_HOSTNAME="intersight-appliance"
+ADMIN_PASSWORD="ChangeMe123!"
+
+# --- OpenStack compute ---
+FLAVOR="8cpu-32G-0G"
+AVAILABILITY_ZONE="nova"
+
+# --- Network ---
+MANAGEMENT_NETWORK="your-management-network"
+FLOATING_IP_POOL=""        # set to external network name for a public IP, or leave empty
+
+# --- Glance image base name ---
+# Disks are uploaded as intersight-appliance-1, intersight-appliance-2, ...
+IMAGE_NAME="intersight-appliance"
+
+# --- Security group ---
+SECURITY_GROUP_NAME="intersight-sg"
+
+# --- DNS and NTP ---
+DNS_SERVERS="8.8.8.8,8.8.4.4"
+NTP_SERVERS="pool.ntp.org"
+
+# --- Proxy (leave empty to disable) ---
+PROXY_HOST=""
+PROXY_PORT="3128"
+PROXY_USERNAME=""
+PROXY_PASSWORD=""

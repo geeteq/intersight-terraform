@@ -1,98 +1,93 @@
 #!/usr/bin/env bash
-# Uploads Cisco Intersight Virtual Appliance disk images to OpenStack and
-# runs terraform apply.
-#
-# The Intersight VA ships as a tar containing multiple qcow2 disk images.
-# Each disk is uploaded as {IMAGE_NAME}-1, {IMAGE_NAME}-2, etc.
-#
-# Two modes:
-#   1. Local file:  set IMAGE_FILE=/path/to/intersight.tar (skips Cisco download)
-#   2. Auto-download: set CISCO_CLIENT_ID and CISCO_CLIENT_SECRET
+# Deploys Cisco Intersight Virtual Appliance on OpenStack using the OpenStack CLI.
+# No Terraform required.
 #
 # Requirements:
-#   pip install openstacksdk requests python-openstackclient
+#   pip install python-openstackclient openstacksdk requests
 #
 # Usage:
 #   source setup_env.sh ~/.config/openstack/clouds.yaml openstack
-#   IMAGE_FILE=/path/to/intersight.tar bash deploy.sh
-#   bash deploy.sh   # downloads from Cisco Software Central
+#   IMAGE_FILE=/path/to/intersight.tar bash deploy.sh [appliance.conf]
 
 set -euo pipefail
 
-TFVARS="${1:-terraform.tfvars}"
-DOWNLOAD_DIR="${TMPDIR:-/tmp}/intersight-download"
+CONFIG="${1:-appliance.conf}"
 
-# Read image_name from tfvars so it matches what Terraform expects.
-# Override by setting IMAGE_NAME in the environment.
-if [[ -z "${IMAGE_NAME:-}" ]]; then
-  IMAGE_NAME=$(grep -E '^\s*image_name\s*=' "${TFVARS}" 2>/dev/null | cut -d'"' -f2 || true)
-  IMAGE_NAME="${IMAGE_NAME:-intersight-appliance}"
+# ---------------------------------------------------------------------------
+# Load config
+# ---------------------------------------------------------------------------
+
+if [[ ! -f "${CONFIG}" ]]; then
+  echo "ERROR: Config file '${CONFIG}' not found."
+  echo "Copy appliance.conf.example to appliance.conf and edit it."
+  exit 1
 fi
 
-CISCO_API_TOKEN_URL="https://id.cisco.com/oauth2/default/v1/token"
-CISCO_SOFTWARE_API="https://apix.cisco.com/software/v4.0"
-INTERSIGHT_MDF_ID="286320499"
+source "${CONFIG}"
 
-# Unset all proxy vars — OpenStack endpoints are internal and must not go through proxy
-unset HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy NO_PROXY no_proxy
+# Required config keys
+for var in VM_HOSTNAME ADMIN_PASSWORD MANAGEMENT_NETWORK FLAVOR IMAGE_NAME; do
+  if [[ -z "${!var:-}" ]]; then
+    echo "ERROR: ${var} is not set in ${CONFIG}"
+    exit 1
+  fi
+done
+
+# Defaults
+AVAILABILITY_ZONE="${AVAILABILITY_ZONE:-nova}"
+SECURITY_GROUP_NAME="${SECURITY_GROUP_NAME:-intersight-sg}"
+FLOATING_IP_POOL="${FLOATING_IP_POOL:-}"
+DNS_SERVERS="${DNS_SERVERS:-8.8.8.8,8.8.4.4}"
+NTP_SERVERS="${NTP_SERVERS:-pool.ntp.org}"
+PROXY_HOST="${PROXY_HOST:-}"
+PROXY_PORT="${PROXY_PORT:-3128}"
+PROXY_USERNAME="${PROXY_USERNAME:-}"
+PROXY_PASSWORD="${PROXY_PASSWORD:-}"
+
+DOWNLOAD_DIR="${TMPDIR:-/tmp}/intersight-download"
 
 # ---------------------------------------------------------------------------
 # Checks
 # ---------------------------------------------------------------------------
+
+# Unset all proxy vars — OpenStack endpoints are internal and must not go through proxy
+unset HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy NO_PROXY no_proxy
 
 if [[ -z "${OS_AUTH_URL:-}" ]]; then
   echo "ERROR: OpenStack environment not set. Run: source setup_env.sh first."
   exit 1
 fi
 
-if ! command -v python3 &>/dev/null; then
-  echo "ERROR: python3 is required"
-  exit 1
-fi
-
-if ! command -v openstack &>/dev/null; then
-  echo "ERROR: 'openstack' CLI is required for image upload."
-  echo "Install with: pip install python-openstackclient"
-  exit 1
-fi
+for cmd in python3 openstack; do
+  if ! command -v "${cmd}" &>/dev/null; then
+    echo "ERROR: '${cmd}' is required. Install with: pip install python-openstackclient"
+    exit 1
+  fi
+done
 
 mkdir -p "${DOWNLOAD_DIR}"
 
 # ---------------------------------------------------------------------------
-# Step 0 — Clean slate: destroy existing resources and images
+# Step 0 — Remove any existing instance and volumes (images are preserved)
 # ---------------------------------------------------------------------------
 
-echo "=== Step 0: Cleaning up existing resources ==="
+echo "=== Step 0: Cleaning up existing instance and volumes ==="
 
-# Destroy Terraform-managed resources if any exist in state
-STATE_RESOURCES=$(terraform state list 2>/dev/null || true)
-if [[ -n "${STATE_RESOURCES}" ]]; then
-  echo "  Destroying existing Terraform resources ..."
-  DESTROY_ARGS=(-var-file="${TFVARS}" -auto-approve)
-  if [[ ! -f "disk_sizes.auto.tfvars" ]]; then
-    DESTROY_ARGS+=(-var 'disk_sizes=[]')
-  fi
-  terraform destroy "${DESTROY_ARGS[@]}" || true
+EXISTING_SERVER=$(openstack server show "${VM_HOSTNAME}" -f value -c id 2>/dev/null || true)
+if [[ -n "${EXISTING_SERVER}" ]]; then
+  echo "  Deleting instance: ${VM_HOSTNAME}"
+  openstack server delete "${VM_HOSTNAME}" --wait
 else
-  echo "  No Terraform state found — skipping destroy"
+  echo "  No existing instance found"
 fi
 
-# Remove stale auto-generated tfvars so sizes are recomputed from fresh images
-rm -f disk_sizes.auto.tfvars
-
-# Delete all Glance images matching {IMAGE_NAME}-*
-echo "  Removing Glance images '${IMAGE_NAME}-*' ..."
-python3 - <<PYEOF
-import openstack
-conn = openstack.connect(load_envvars=True, insecure=True)
-images = [i for i in conn.image.images(visibility="private")
-          if i.name and i.name.startswith("${IMAGE_NAME}-")]
-if not images:
-    print("  No matching images found")
-for image in images:
-    print(f"  Deleting: {image.name} ({image.id})")
-    conn.image.delete_image(image.id)
-PYEOF
+# Delete volumes named {VM_HOSTNAME}-disk-*
+while IFS= read -r vol_id; do
+  [[ -z "${vol_id}" ]] && continue
+  vol_name=$(openstack volume show "${vol_id}" -f value -c name 2>/dev/null || true)
+  echo "  Deleting volume: ${vol_name} (${vol_id})"
+  openstack volume delete "${vol_id}" 2>/dev/null || true
+done < <(openstack volume list --name "${VM_HOSTNAME}-disk-%" -f value -c ID 2>/dev/null || true)
 
 echo ""
 
@@ -101,7 +96,6 @@ echo ""
 # ---------------------------------------------------------------------------
 
 if [[ -n "${IMAGE_FILE:-}" ]]; then
-  # ---- Local file mode ----
   echo "=== Step 1: Using local image file ==="
 
   if [[ ! -f "${IMAGE_FILE}" ]]; then
@@ -141,121 +135,88 @@ else
       echo "Or set Cisco API credentials to download automatically:"
       echo "  export CISCO_CLIENT_ID=your-client-id"
       echo "  export CISCO_CLIENT_SECRET=your-client-secret"
-      echo ""
-      echo "Register for API access at: https://apiconsole.cisco.com"
       exit 1
     fi
   done
 
-  echo "=== Step 1: Authenticating with Cisco Software Central ==="
+  CISCO_API_TOKEN_URL="https://id.cisco.com/oauth2/default/v1/token"
+  CISCO_SOFTWARE_API="https://apix.cisco.com/software/v4.0"
+  INTERSIGHT_MDF_ID="286320499"
 
+  echo "=== Step 1: Authenticating with Cisco Software Central ==="
   CISCO_TOKEN=$(python3 - <<PYEOF
 import sys, requests
-
-resp = requests.post(
-    "${CISCO_API_TOKEN_URL}",
-    data={
-        "grant_type": "client_credentials",
-        "client_id": "${CISCO_CLIENT_ID}",
-        "client_secret": "${CISCO_CLIENT_SECRET}",
-    },
-    timeout=30,
-)
+resp = requests.post("${CISCO_API_TOKEN_URL}",
+    data={"grant_type": "client_credentials",
+          "client_id": "${CISCO_CLIENT_ID}",
+          "client_secret": "${CISCO_CLIENT_SECRET}"}, timeout=30)
 if resp.status_code != 200:
-    print(f"ERROR: Cisco auth failed: {resp.status_code} {resp.text}", file=sys.stderr)
-    sys.exit(1)
+    print(f"ERROR: {resp.status_code} {resp.text}", file=sys.stderr); sys.exit(1)
 print(resp.json()["access_token"])
 PYEOF
 )
   echo "Authentication successful."
 
   echo ""
-  echo "=== Step 2: Querying latest Intersight Virtual Appliance release ==="
-
+  echo "=== Step 2: Querying latest Intersight VA release ==="
   read LATEST_VERSION DOWNLOAD_URL FILENAME < <(python3 - <<PYEOF
 import sys, requests
-
 headers = {"Authorization": f"Bearer ${CISCO_TOKEN}"}
-
 resp = requests.get("${CISCO_SOFTWARE_API}/metadata/${INTERSIGHT_MDF_ID}/releases", headers=headers, timeout=30)
 if resp.status_code != 200:
-    print(f"ERROR: Failed to fetch releases: {resp.status_code} {resp.text}", file=sys.stderr)
-    sys.exit(1)
-
+    print(f"ERROR: {resp.status_code}", file=sys.stderr); sys.exit(1)
 releases = resp.json().get("releases", [])
 if not releases:
-    print("ERROR: No releases found for Intersight VA", file=sys.stderr)
-    sys.exit(1)
-
+    print("ERROR: No releases found", file=sys.stderr); sys.exit(1)
 version = releases[0].get("releaseVersion", "unknown")
-
 resp = requests.get(f"${CISCO_SOFTWARE_API}/metadata/${INTERSIGHT_MDF_ID}/releases/{version}/files", headers=headers, timeout=30)
-if resp.status_code != 200:
-    print(f"ERROR: Failed to fetch files: {resp.status_code} {resp.text}", file=sys.stderr)
-    sys.exit(1)
-
 files = resp.json().get("files", [])
-qcow2 = next((f for f in files if f["fileName"].endswith(".qcow2")), None)
-ova   = next((f for f in files if f["fileName"].endswith(".ova")), None)
-target = qcow2 or ova
+target = next((f for f in files if f["fileName"].endswith(".qcow2")), None) or \
+         next((f for f in files if f["fileName"].endswith(".ova")), None)
 if not target:
-    print("ERROR: No qcow2 or OVA found for this release", file=sys.stderr)
-    sys.exit(1)
-
+    print("ERROR: No image found", file=sys.stderr); sys.exit(1)
 print(version, target["downloadURL"], target["fileName"])
 PYEOF
 )
-  echo "Latest version: ${LATEST_VERSION}"
-  echo "File:           ${FILENAME}"
-
-  echo ""
-  echo "=== Step 4: Downloading Intersight VA ${LATEST_VERSION} ==="
+  echo "Latest version: ${LATEST_VERSION} — ${FILENAME}"
 
   LOCAL_FILE="${DOWNLOAD_DIR}/${FILENAME}"
-
+  echo ""
+  echo "=== Step 4: Downloading ${FILENAME} ==="
   python3 - <<PYEOF
 import sys, requests
-
 headers = {"Authorization": f"Bearer ${CISCO_TOKEN}"}
-print(f"Downloading: ${LOCAL_FILE}")
-
 with requests.get("${DOWNLOAD_URL}", headers=headers, stream=True, timeout=300) as r:
     r.raise_for_status()
     total = int(r.headers.get("content-length", 0))
-    downloaded = 0
+    done = 0
     with open("${LOCAL_FILE}", "wb") as f:
-        for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
-            f.write(chunk)
-            downloaded += len(chunk)
+        for chunk in r.iter_content(chunk_size=8*1024*1024):
+            f.write(chunk); done += len(chunk)
             if total:
-                pct = downloaded * 100 // total
-                print(f"  {pct}% ({downloaded // 1024 // 1024} MB / {total // 1024 // 1024} MB)", end="\r")
-print(f"\nDownload complete.")
+                print(f"  {done*100//total}% ({done//1024//1024}/{total//1024//1024} MB)", end="\r")
+print("\nDone.")
 PYEOF
 
   if [[ "${FILENAME}" == *.ova ]]; then
-    echo "Converting OVA to qcow2 ..."
-    if ! command -v qemu-img &>/dev/null; then
-      echo "ERROR: qemu-img not found. Install with: brew install qemu"
-      exit 1
-    fi
-    QCOW2_FILE="${DOWNLOAD_DIR}/intersight-appliance.qcow2"
-    qemu-img convert -f vmdk -O qcow2 "${LOCAL_FILE}" "${QCOW2_FILE}"
-    LOCAL_FILE="${QCOW2_FILE}"
-    echo "Conversion complete."
+    QCOW2="${DOWNLOAD_DIR}/intersight.qcow2"
+    qemu-img convert -f vmdk -O qcow2 "${LOCAL_FILE}" "${QCOW2}"
+    LOCAL_FILE="${QCOW2}"
   fi
 
   DISK_FILES=("${LOCAL_FILE}")
 fi
 
 # ---------------------------------------------------------------------------
-# Step 3 — Check which disk images are missing in OpenStack
+# Step 3 — Upload missing disk images to Glance
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "=== Step 3: Checking disk images in OpenStack ==="
+echo "=== Step 3: Checking disk images in Glance ==="
 
+DISK_SIZES=()
 MISSING_INDICES=()
+
 for i in "${!DISK_FILES[@]}"; do
   DISK_NUM=$((i + 1))
   DISK_NAME="${IMAGE_NAME}-${DISK_NUM}"
@@ -268,7 +229,7 @@ if image and image.status == "active" and (image.size or 0) > 100 * 1024 * 1024:
     print("yes")
 else:
     if image:
-        print(f"  Deleting invalid image '${DISK_NAME}' (status={image.status}, size={image.size}) ...", flush=True)
+        print(f"  Deleting invalid image '${DISK_NAME}' ...", flush=True)
         conn.image.delete_image(image.id)
     print("no")
 PYEOF
@@ -283,41 +244,33 @@ PYEOF
 done
 
 # ---------------------------------------------------------------------------
-# Step 5 — Upload missing disk images
+# Step 4 — Upload missing disks
 # ---------------------------------------------------------------------------
 
 if [[ ${#MISSING_INDICES[@]} -gt 0 ]]; then
   echo ""
-  echo "=== Step 5: Uploading ${#MISSING_INDICES[@]} disk image(s) to OpenStack ==="
+  echo "=== Step 4: Uploading ${#MISSING_INDICES[@]} disk image(s) ==="
 
   for i in "${MISSING_INDICES[@]}"; do
     DISK_FILE="${DISK_FILES[$i]}"
     DISK_NUM=$((i + 1))
     DISK_NAME="${IMAGE_NAME}-${DISK_NUM}"
 
-    # Convert vmdk to qcow2 if needed
     if [[ "${DISK_FILE}" == *.vmdk ]]; then
-      if ! command -v qemu-img &>/dev/null; then
-        echo "ERROR: qemu-img not found. Install with: brew install qemu"
-        exit 1
-      fi
-      QCOW2_FILE="${DOWNLOAD_DIR}/disk-${DISK_NUM}.qcow2"
-      echo "  Converting $(basename "${DISK_FILE}") to qcow2 ..."
-      qemu-img convert -f vmdk -O qcow2 "${DISK_FILE}" "${QCOW2_FILE}"
-      DISK_FILE="${QCOW2_FILE}"
+      QCOW2="${DOWNLOAD_DIR}/disk-${DISK_NUM}.qcow2"
+      echo "  Converting $(basename "${DISK_FILE}") ..."
+      qemu-img convert -f vmdk -O qcow2 "${DISK_FILE}" "${QCOW2}"
+      DISK_FILE="${QCOW2}"
     fi
 
     case "${DISK_FILE}" in
-      *.qcow2) DISK_FORMAT="qcow2" ;;
-      *.qcow)  DISK_FORMAT="qcow2" ;;
-      *.raw)   DISK_FORMAT="raw"   ;;
-      *)       DISK_FORMAT="qcow2" ;;
+      *.qcow2|*.qcow) DISK_FORMAT="qcow2" ;;
+      *.raw)          DISK_FORMAT="raw"   ;;
+      *)              DISK_FORMAT="qcow2" ;;
     esac
 
     echo ""
     echo "  Uploading disk ${DISK_NUM}/${#DISK_FILES[@]}: ${DISK_NAME}"
-    echo "  Source: $(basename "${DISK_FILE}")"
-
     openstack image create "${DISK_NAME}" \
       --file "${DISK_FILE}" \
       --disk-format "${DISK_FORMAT}" \
@@ -326,56 +279,193 @@ if [[ ${#MISSING_INDICES[@]} -gt 0 ]]; then
       --progress
   done
 
-  if [[ -z "${IMAGE_FILE:-}" ]]; then
-    echo "Cleaning up temporary files ..."
-    rm -rf "${DOWNLOAD_DIR}"
-  fi
+  [[ -z "${IMAGE_FILE:-}" ]] && rm -rf "${DOWNLOAD_DIR}"
 else
-  echo "All disk images already exist in OpenStack — skipping upload."
+  echo "  All disk images already in Glance."
 fi
 
 # ---------------------------------------------------------------------------
-# Step 5.5 — Write disk_sizes.auto.tfvars from Glance virtual sizes
+# Step 5 — Read virtual sizes from Glance
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "=== Step 5.5: Reading virtual disk sizes from Glance ==="
+echo "=== Step 5: Reading virtual disk sizes from Glance ==="
 
 DISK_COUNT="${#DISK_FILES[@]}"
 
-python3 - <<PYEOF
+readarray -t DISK_SIZES < <(python3 - <<PYEOF
 import openstack, math
-
 conn = openstack.connect(load_envvars=True, insecure=True)
-
-sizes = []
 for i in range(1, ${DISK_COUNT} + 1):
-    name = "${IMAGE_NAME}-{}".format(i)
-    image = conn.image.find_image(name, ignore_missing=True)
+    image = conn.image.find_image("${IMAGE_NAME}-{}".format(i), ignore_missing=True)
     if image and image.virtual_size:
-        size_gb = math.ceil(image.virtual_size / (1024 ** 3))
-        sizes.append(size_gb)
-        print(f"  {name}: {size_gb} GB (virtual size)")
+        print(math.ceil(image.virtual_size / 1024**3))
     else:
-        sizes.append(500)
-        print(f"  {name}: virtual_size not available — defaulting to 500 GB")
-
-tfvars_line = "disk_sizes = [{}]".format(", ".join(str(s) for s in sizes))
-
-with open("disk_sizes.auto.tfvars", "w") as f:
-    f.write("# Auto-generated by deploy.sh from Glance virtual sizes — do not edit manually\n")
-    f.write(tfvars_line + "\n")
-
-print(f"\nWritten disk_sizes.auto.tfvars")
-print(f"  {tfvars_line}")
+        print(500)
 PYEOF
+)
+
+for i in "${!DISK_SIZES[@]}"; do
+  echo "  ${IMAGE_NAME}-$((i+1)): ${DISK_SIZES[$i]} GB"
+done
 
 # ---------------------------------------------------------------------------
-# Step 6 — Run Terraform
+# Step 6 — Create security group
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "=== Step 6: Running terraform apply ==="
-echo ""
+echo "=== Step 6: Configuring security group ==="
 
-terraform apply -var-file="${TFVARS}"
+if ! openstack security group show "${SECURITY_GROUP_NAME}" &>/dev/null; then
+  echo "  Creating security group: ${SECURITY_GROUP_NAME}"
+  openstack security group create "${SECURITY_GROUP_NAME}" \
+    --description "Intersight Virtual Appliance"
+
+  openstack security group rule create "${SECURITY_GROUP_NAME}" --protocol tcp --dst-port 443 --ingress
+  openstack security group rule create "${SECURITY_GROUP_NAME}" --protocol tcp --dst-port 80  --ingress
+  openstack security group rule create "${SECURITY_GROUP_NAME}" --protocol tcp --dst-port 22  --ingress
+  openstack security group rule create "${SECURITY_GROUP_NAME}" --protocol tcp --dst-port 1 --dst-port 65535 --egress
+else
+  echo "  Security group '${SECURITY_GROUP_NAME}' already exists — skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 7 — Create Cinder volumes from images
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "=== Step 7: Creating volumes ==="
+
+VOLUME_IDS=()
+for i in "${!DISK_SIZES[@]}"; do
+  DISK_NUM=$((i + 1))
+  VOL_NAME="${VM_HOSTNAME}-disk-${DISK_NUM}"
+  SIZE="${DISK_SIZES[$i]}"
+
+  echo "  Creating ${VOL_NAME} (${SIZE} GB) from ${IMAGE_NAME}-${DISK_NUM} ..."
+  VOL_ID=$(openstack volume create "${VOL_NAME}" \
+    --image "${IMAGE_NAME}-${DISK_NUM}" \
+    --size "${SIZE}" \
+    --availability-zone "${AVAILABILITY_ZONE}" \
+    -f value -c id)
+  VOLUME_IDS+=("${VOL_ID}")
+  echo "  ${VOL_NAME}: ${VOL_ID}"
+done
+
+echo "  Waiting for volumes to become available ..."
+for VOL_ID in "${VOLUME_IDS[@]}"; do
+  openstack volume wait --available "${VOL_ID}"
+done
+echo "  All volumes ready."
+
+# ---------------------------------------------------------------------------
+# Step 8 — Generate user data
+# ---------------------------------------------------------------------------
+
+DNS_JSON=$(python3 -c "
+import json, sys
+servers = '${DNS_SERVERS}'.split(',')
+print(json.dumps([s.strip() for s in servers]))
+")
+
+NTP_JSON=$(python3 -c "
+import json
+servers = '${NTP_SERVERS}'.split(',')
+print(json.dumps([s.strip() for s in servers]))
+")
+
+PROXY_BLOCK=""
+if [[ -n "${PROXY_HOST}" ]]; then
+  PROXY_BLOCK=",\"proxy\":{\"host\":\"${PROXY_HOST}\",\"port\":${PROXY_PORT}"
+  if [[ -n "${PROXY_USERNAME}" ]]; then
+    PROXY_BLOCK+=",\"username\":\"${PROXY_USERNAME}\",\"password\":\"${PROXY_PASSWORD}\""
+  fi
+  PROXY_BLOCK+="}"
+fi
+
+USER_DATA=$(cat <<EOF
+#cloud-config
+hostname: ${VM_HOSTNAME}
+write_files:
+  - path: /etc/intersight/appliance-config.json
+    permissions: '0600'
+    content: |
+      {
+        "hostname": "${VM_HOSTNAME}",
+        "dns": ${DNS_JSON},
+        "ntp": ${NTP_JSON},
+        "adminPassword": "${ADMIN_PASSWORD}"${PROXY_BLOCK}
+      }
+runcmd:
+  - hostnamectl set-hostname ${VM_HOSTNAME}
+  - [ sh, -c, "if [ -f /usr/local/bin/intersight-appliance-setup ]; then /usr/local/bin/intersight-appliance-setup --config /etc/intersight/appliance-config.json; fi" ]
+EOF
+)
+
+USERDATA_FILE="${DOWNLOAD_DIR}/user-data.yaml"
+echo "${USER_DATA}" > "${USERDATA_FILE}"
+
+# ---------------------------------------------------------------------------
+# Step 9 — Boot instance
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "=== Step 9: Booting instance ==="
+
+# Build block device mapping: first volume is boot, rest are data
+BOOT_DISK="${VOLUME_IDS[0]}"
+BDM_ARGS=()
+for i in "${!VOLUME_IDS[@]}"; do
+  if [[ $i -eq 0 ]]; then
+    BDM_ARGS+=(--volume "${VOLUME_IDS[$i]}")
+  else
+    BDM_ARGS+=(--block-device-mapping "sd$(printf "\\x$(printf '%02x' $((98 + i)))")=${VOLUME_IDS[$i]}:::false")
+  fi
+done
+
+SERVER_ID=$(openstack server create "${VM_HOSTNAME}" \
+  --flavor "${FLAVOR}" \
+  --network "${MANAGEMENT_NETWORK}" \
+  --security-group "${SECURITY_GROUP_NAME}" \
+  --availability-zone "${AVAILABILITY_ZONE}" \
+  --user-data "${USERDATA_FILE}" \
+  "${BDM_ARGS[@]}" \
+  -f value -c id)
+
+echo "  Instance created: ${SERVER_ID}"
+echo "  Waiting for instance to become active ..."
+openstack server wait --active "${SERVER_ID}" --timeout 300
+
+MGMT_IP=$(openstack server show "${SERVER_ID}" -f value -c addresses | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+echo "  Management IP: ${MGMT_IP}"
+
+# ---------------------------------------------------------------------------
+# Step 10 — Assign floating IP (optional)
+# ---------------------------------------------------------------------------
+
+if [[ -n "${FLOATING_IP_POOL}" ]]; then
+  echo ""
+  echo "=== Step 10: Assigning floating IP ==="
+  FLOATING_IP=$(openstack floating ip create "${FLOATING_IP_POOL}" -f value -c floating_ip_address)
+  openstack server add floating ip "${SERVER_ID}" "${FLOATING_IP}"
+  echo "  Floating IP: ${FLOATING_IP}"
+  ACCESS_IP="${FLOATING_IP}"
+else
+  ACCESS_IP="${MGMT_IP}"
+fi
+
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "================================================"
+echo " Intersight Virtual Appliance deployed"
+echo "================================================"
+echo "  Instance:  ${VM_HOSTNAME} (${SERVER_ID})"
+echo "  Access:    https://${ACCESS_IP}"
+echo "  Username:  admin"
+echo "  Password:  (set in ${CONFIG})"
+echo ""
+echo "  Allow 10-15 minutes for the appliance to initialise."
+echo "================================================"
