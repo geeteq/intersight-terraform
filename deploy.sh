@@ -234,10 +234,13 @@ for i in "${!DISK_FILES[@]}"; do
   DISK_NUM=$((i + 1))
   DISK_NAME="${IMAGE_NAME}-${DISK_NUM}"
 
-  STATUS=$(openstack image show "${DISK_NAME}" -f value -c status 2>/dev/null || echo "missing")
+  # Use image list so multiple images with the same name don't cause
+  # 'image show' to fail with an ambiguity error and falsely trigger re-upload
+  ACTIVE_COUNT=$(openstack image list --name "${DISK_NAME}" -f value -c Status 2>/dev/null \
+                 | grep -c "^active$" || true)
 
-  if [[ "${STATUS}" != "missing" ]]; then
-    echo "  ${DISK_NAME}: already uploaded (${STATUS}) — skipping"
+  if [[ "${ACTIVE_COUNT}" -gt 0 ]]; then
+    echo "  ${DISK_NAME}: active — skipping"
   else
     echo "  ${DISK_NAME}: not found — will upload"
     MISSING_INDICES+=("${i}")
@@ -342,9 +345,11 @@ IMAGE_IDS=()
 for i in "${!DISK_SIZES[@]}"; do
   DISK_NUM=$((i + 1))
   IMG_NAME="${IMAGE_NAME}-${DISK_NUM}"
-  IMG_ID=$(openstack image show "${IMG_NAME}" -f value -c id 2>/dev/null || true)
+  # Pick the first active image with this name (handles duplicates gracefully)
+  IMG_ID=$(openstack image list --name "${IMG_NAME}" --status active -f value -c ID 2>/dev/null \
+           | head -1 || true)
   if [[ -z "${IMG_ID}" ]]; then
-    echo "ERROR: Glance image '${IMG_NAME}' not found. Run deploy.sh with IMAGE_FILE set first."
+    echo "ERROR: No active Glance image '${IMG_NAME}' found. Run deploy.sh with IMAGE_FILE set first."
     exit 1
   fi
   IMAGE_IDS+=("${IMG_ID}")
