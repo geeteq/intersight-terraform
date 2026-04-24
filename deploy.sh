@@ -344,25 +344,69 @@ fi
 echo ""
 echo "=== Step 7: Creating volumes ==="
 
+# Resolve image names to UUIDs — more reliable than passing names to --image
+declare -A IMAGE_IDS
+for i in "${!DISK_SIZES[@]}"; do
+  DISK_NUM=$((i + 1))
+  IMG_NAME="${IMAGE_NAME}-${DISK_NUM}"
+  IMG_ID=$(openstack image show "${IMG_NAME}" -f value -c id 2>/dev/null || true)
+  if [[ -z "${IMG_ID}" ]]; then
+    echo "ERROR: Glance image '${IMG_NAME}' not found. Run deploy.sh with IMAGE_FILE set first."
+    exit 1
+  fi
+  IMAGE_IDS[$i]="${IMG_ID}"
+done
+
+# Create all volumes in parallel, then wait
 VOLUME_IDS=()
 for i in "${!DISK_SIZES[@]}"; do
   DISK_NUM=$((i + 1))
   VOL_NAME="${VM_HOSTNAME}-disk-${DISK_NUM}"
   SIZE="${DISK_SIZES[$i]}"
+  IMG_ID="${IMAGE_IDS[$i]}"
 
-  echo "  Creating ${VOL_NAME} (${SIZE} GB) from ${IMAGE_NAME}-${DISK_NUM} ..."
+  echo "  Creating ${VOL_NAME} (${SIZE} GB) from image ${IMG_ID} ..."
   VOL_ID=$(openstack volume create "${VOL_NAME}" \
-    --image "${IMAGE_NAME}-${DISK_NUM}" \
+    --image "${IMG_ID}" \
     --size "${SIZE}" \
     --availability-zone "${AVAILABILITY_ZONE}" \
-    -f value -c id)
+    -f value -c id 2>/dev/null || true)
+
+  if [[ -z "${VOL_ID}" ]]; then
+    echo "ERROR: Failed to create volume ${VOL_NAME}."
+    exit 1
+  fi
+
   VOLUME_IDS+=("${VOL_ID}")
-  echo "  ${VOL_NAME}: ${VOL_ID}"
+  echo "    ${VOL_NAME}: ${VOL_ID}"
 done
 
-echo "  Waiting for volumes to become available ..."
-for VOL_ID in "${VOLUME_IDS[@]}"; do
-  openstack volume wait --available "${VOL_ID}"
+echo ""
+echo "  Waiting for all volumes to become available ..."
+for i in "${!VOLUME_IDS[@]}"; do
+  VOL_ID="${VOLUME_IDS[$i]}"
+  VOL_NAME="${VM_HOSTNAME}-disk-$((i + 1))"
+
+  for attempt in $(seq 1 60); do
+    STATUS=$(openstack volume show "${VOL_ID}" -f value -c status 2>/dev/null || echo "unknown")
+    case "${STATUS}" in
+      available)
+        echo "    ${VOL_NAME}: available"
+        break
+        ;;
+      error*)
+        echo ""
+        echo "ERROR: Volume ${VOL_NAME} (${VOL_ID}) entered error status."
+        echo "       Cinder detail:"
+        openstack volume show "${VOL_ID}" -c status -c migration_status -c volume_type 2>/dev/null || true
+        exit 1
+        ;;
+      *)
+        printf "\r    ${VOL_NAME}: ${STATUS} (%d/60) ..." "${attempt}"
+        sleep 10
+        ;;
+    esac
+  done
 done
 echo "  All volumes ready."
 
