@@ -34,7 +34,8 @@ for var in VM_HOSTNAME ADMIN_PASSWORD MANAGEMENT_NETWORK FLAVOR IMAGE_NAME; do
 done
 
 # Defaults
-AVAILABILITY_ZONE="${AVAILABILITY_ZONE:-nova}"
+VM_AZ="${VM_AZ:-nova}"
+VOLUME_AZ="${VOLUME_AZ:-nova}"
 SECURITY_GROUP_NAME="${SECURITY_GROUP_NAME:-intersight-sg}"
 FLOATING_IP_POOL="${FLOATING_IP_POOL:-}"
 DNS_SERVERS="${DNS_SERVERS:-8.8.8.8,8.8.4.4}"
@@ -413,7 +414,7 @@ if [[ "${VOLUMES_NEED_CREATION}" == "true" ]]; then
     VOL_ID=$(openstack volume create "${VOL_NAME}" \
       --image "${IMG_ID}" \
       --size "${SIZE}" \
-      --availability-zone "${AVAILABILITY_ZONE}" \
+      --availability-zone "${VOLUME_AZ}" \
       -f value -c id)
 
     if [[ -z "${VOL_ID}" ]]; then
@@ -508,7 +509,7 @@ SERVER_ID=$(openstack server create "${VM_HOSTNAME}" \
   --flavor "${FLAVOR}" \
   --network "${MANAGEMENT_NETWORK}" \
   --security-group "${SECURITY_GROUP_NAME}" \
-  --availability-zone "${AVAILABILITY_ZONE}" \
+  --availability-zone "${VM_AZ}" \
   --user-data "${USERDATA_FILE}" \
   "${BDM_ARGS[@]}" \
   -f value -c id)

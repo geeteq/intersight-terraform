@@ -7,7 +7,8 @@ ADMIN_PASSWORD="ChangeMe123!"
 
 # --- OpenStack compute ---
 FLAVOR="8cpu-32G-0G"
-AVAILABILITY_ZONE="nova"
+VM_AZ="nova"       # Nova availability zone for the VM instance
+VOLUME_AZ="nova"   # Cinder availability zone for disk volumes
 
 # --- Network ---
 MANAGEMENT_NETWORK="your-management-network"
